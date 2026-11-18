@@ -18,13 +18,9 @@
 15 until 0x800ED148 0x04000100 0x04000000 5
 15.5 shot mono
 16 key Shift 100
-17.5 shot b1
 18 key Shift 100
-19.5 shot b2
 20 key Space 100
-21.5 shot a1
 22 key Space 100
-23.5 shot a2
 24 until 0x800F09F4 0xFFFFFFFF 0x69 30
 25 until 0x800D1B70 0x04000100 0x04000000 10
 25.5 saves changed 15
