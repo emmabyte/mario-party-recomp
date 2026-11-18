@@ -36,8 +36,7 @@ This repo is the game: its recompilation, the patches over it, the desktop build
 - The decomp is built only where the ROM is, never in CI.
 - The desktop releases are built where the ROM is too, by `tools/release.sh` (its header says how), and published to
   GitHub Releases with their notes in `releases/`. A fix for an issue a player filed ships in the next release,
-  Windows and Linux both, which the work that fixed it sees out and names in its answer (N64Recomp-browser's
-  CLAUDE.md, Releasing).
+  Windows and Linux both, which the work that fixed it sees out and names in its answer.
 - The scope is the game as it plays, plus what a web page needs (RT64 interpolation to the display's rate, resolution
   Auto), plus modern enhancements: each an option with an Original value that plays as the console does, none
   changing how the game plays. USA only.
