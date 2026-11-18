@@ -1,0 +1,32 @@
+# The save run of the save check (N64Recomp-browser's tools/frame_dump.mjs --saves, with tools/load_plan.txt): Start
+# through the opening on a new save into Mushroom Village (the screen, omOvlGotoEx's last overlay at 0x800F09F4,
+# 0x69), A through Toad's welcome until the village takes the cursor (0x800FA1C0's top half 1), the d-pad right to the
+# Option House (the cursor's index at 0x800FA1E2, 3) and A into it (0x6E). Left on its menu is the sound setting, A
+# opens it and A again sets Mono: flag 0x10 (the 0x100 bit of 0x800ED148, GwCommon's flags) cleared, beside flag 2
+# (0x04000000, the village visited). B, B (to Exit) and A, A (yes) leave the house, which saves (func_8005B244), and
+# the game's copy of the EEPROM (0x800D1B20, the flags at 0x800D1B70) then holds both. A blank EEPROM is written with
+# the defaults at boot, so saves/ has changed by then all the same: the load run's check is what tells the save.
+0 until 0x800F09F4 0xFFFFFFFF 0x69 120 Enter
+1.5 until 0x800FA1C0 0xFFFF0000 0x00010000 60 Space
+3 key L 100
+4 until 0x800FA1E0 0x0000FFFF 0x00000003 5
+5 key Space 100
+6 until 0x800F09F4 0xFFFFFFFF 0x6E 20
+9 key J 100
+11 key Space 100
+14 key Space 100
+15 until 0x800ED148 0x04000100 0x04000000 5
+15.5 shot mono
+16 key Shift 100
+17.5 shot b1
+18 key Shift 100
+19.5 shot b2
+20 key Space 100
+21.5 shot a1
+22 key Space 100
+23.5 shot a2
+24 until 0x800F09F4 0xFFFFFFFF 0x69 30
+25 until 0x800D1B70 0x04000100 0x04000000 10
+25.5 saves changed 15
+27 shot village
+28 end

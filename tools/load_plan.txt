@@ -1,0 +1,28 @@
+# The load run of the save check (N64Recomp-browser's tools/frame_dump.mjs --saves), after tools/save_plan.txt, the
+# program started again in the same folder: the game reads its EEPROM at boot, before the logos, and GwCommon's flags
+# (0x800ED148) then say the village was visited (0x04000000) with the sound on Mono (the 0x100 bit clear), which a boot
+# without that save never has (0x00000100). Nothing is written on the way into the village. Then the sound is set back
+# to Stereo the same way and the house left, which saves again, through the check's links.
+0 until 0x800ED148 0x04000100 0x04000000 30
+0.5 until 0x800F09F4 0xFFFFFFFF 0x69 120 Enter
+1.5 shot village
+2 saves same
+2.5 until 0x800FA1C0 0xFFFF0000 0x00010000 60 Space
+4 key L 100
+5 until 0x800FA1E0 0x0000FFFF 0x00000003 5
+6 key Space 100
+7 until 0x800F09F4 0xFFFFFFFF 0x6E 20
+10 key J 100
+12 key Space 100
+15 key Space 100
+16 until 0x800ED148 0x04000100 0x04000100 5
+16.5 shot stereo
+17 key Shift 100
+19 key Shift 100
+21 key Space 100
+23 key Space 100
+25 until 0x800F09F4 0xFFFFFFFF 0x69 30
+26 until 0x800D1B70 0x04000100 0x04000100 10
+26.5 saves changed 15
+28 shot village2
+29 end
