@@ -9,8 +9,7 @@ published with the game in it.
 What is the game's own stays here: the `EMSCRIPTEN` branches of `CMakeLists.txt` that make the game a page,
 `tools/build_web.sh`, the play plans (`tools/play_plan.json`, `tools/play_plan_pads.json`) and the shader list with what
 records it. The rest is N64Recomp-browser's: `docs/porting.md` (WebGPU and the shaders, prebuilt shader lists,
-Emscripten), `docs/playing.md` (playing and measuring a page), `docs/forks.md` and `docs/findings.md`. Every play of
-this game's page is a line in N64Recomp-browser's `plays.jsonl` (game `mp1`), never a record here.
+Emscripten), `docs/playing.md` (playing and measuring a page), `docs/forks.md` and `docs/findings.md`.
 
 The engine's process scheduler runs on threads on the page as on the desktop (`docs/processes.md`): the page has
 threads and C++ exceptions anyway, so it needs no Asyncify.
@@ -50,9 +49,9 @@ screen is up is the overlay `omOvlGotoEx` last went to, a word at 0x800F09F4: Mu
 (DK's Jungle Adventure) to 0x3D (Eternal Star) and the rules' board 0x3E.
 
 `tools/play_plan_pads.json` plays it with two stand-in pads of one model (N64Recomp-browser's
-`tools/gamepad_probe.js`, item 3 of its `docs/new-recomp.md`): each pad plays a port of its own, the game offers a
-player for each, and the rumble of the port a pad plays reaches that pad, since `src/main/main.cpp` puts a Rumble Pak
-in each port with a controller (with none the game never rumbles). Its header says what it reads for each.
+`tools/gamepad_probe.js`): each pad plays a port of its own, the game offers a player for each, and the rumble of the
+port a pad plays reaches that pad, since `src/main/main.cpp` puts a Rumble Pak in each port with a controller (with none
+the game never rumbles). Its header says what it reads for each.
 
 ## The shader list
 
