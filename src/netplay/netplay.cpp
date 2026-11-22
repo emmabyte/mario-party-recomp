@@ -53,8 +53,11 @@
 // With neither file set nothing here runs: each hook returns at once and the game plays as it does without netplay.
 
 #include "netplay.h"
+#include "udp.h"
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <atomic>
 #include <cinttypes>
 #include <cstdio>
@@ -116,7 +119,7 @@ namespace {
         std::array<uint64_t, CHUNKS> chunks{};
     };
 
-    enum class Mode { Off, Record, Replay };
+    enum class Mode { Off, Record, Replay, Session };
 
     Mode mode = Mode::Off;
     ultramodern::input::callbacks_t input_callbacks{};
@@ -576,6 +579,249 @@ namespace {
     }
 }
 
+
+// A session between two computers (MP_NETPLAY_PEER): delay-based lockstep. Each plays one port (MP_NETPLAY_PLAYER, 0
+// or 1) with its own first pad, and each frame's inputs are both players': this computer's pad as it sampled it
+// MP_NETPLAY_DELAY frames earlier, and the peer's for the same frame, which the frame waits for. So both run the same
+// frames on the same inputs, and the game's logic on each turns them into the same RDRAM (the recording and replay
+// above test that it does). The first DELAY frames have no inputs from anyone.
+//
+// The packets, both ways, each frame and again every 16 ms while a frame waits: this computer's inputs from the first
+// frame the peer hasn't acknowledged, up to 32 frames of them, its acknowledgement of the peer's (the first frame it
+// still needs), and the hashes of RDRAM it has made for its last frames, which the peer compares with its own: a
+// frame whose hashes differ ends the session on both, naming the frame, since from there the two games differ.
+namespace {
+    constexpr uint32_t SESSION_MAGIC = 0x534E504D; // "MPNS"
+    constexpr uint32_t SESSION_VERSION = 1;
+    constexpr int PLAYERS = 2;
+    constexpr int MAX_SEND = 32;
+    constexpr int HASHES_SENT = 4;
+    constexpr int PAD_BYTES = 5;
+    using Inputs = std::array<Pad, SAMPLES>;
+
+    int player = 0;
+    int delay = 3;
+    int64_t session_frames = -1; // MP_NETPLAY_FRAMES: ends the session after this many frames
+    int timeout_ms = 15000;
+    int drop_percent = 0; // MP_NETPLAY_DROP: drops this share of the packets sent, to test a lossy link
+
+    std::vector<Inputs> local_inputs;   // by frame
+    std::vector<Inputs> remote_inputs;  // by frame
+    std::vector<uint8_t> remote_have;   // by frame
+    uint32_t remote_next = 0;           // the first frame of the peer's this computer still needs
+    uint32_t peer_ack = 0;              // the first frame of this computer's the peer still needs
+    std::vector<uint64_t> local_hashes; // by frame
+    std::deque<std::pair<uint32_t, uint64_t>> remote_hashes; // the peer's, not yet compared
+    uint64_t hashes_compared = 0;
+    uint32_t compare_from = 0;          // the first frame whose hash is yet to be compared
+
+    struct Writer {
+        uint8_t buf[1400];
+        size_t n = 0;
+        void u8(uint8_t v) { buf[n++] = v; }
+        void u32(uint32_t v) { for (int i = 0; i < 4; i++) u8(uint8_t(v >> (8 * i))); }
+        void u64(uint64_t v) { u32(uint32_t(v)); u32(uint32_t(v >> 32)); }
+    };
+    struct Reader {
+        const uint8_t* buf;
+        size_t n, at = 0;
+        bool ok = true;
+        uint8_t u8() { if (at >= n) { ok = false; return 0; } return buf[at++]; }
+        uint32_t u32() { uint32_t v = 0; for (int i = 0; i < 4; i++) v |= uint32_t(u8()) << (8 * i); return v; }
+        uint64_t u64() { uint64_t lo = u32(); return lo | (uint64_t(u32()) << 32); }
+    };
+
+    void put_pad(Writer& w, const Pad& p) {
+        w.u8(uint8_t(p.button)); w.u8(uint8_t(p.button >> 8)); w.u8(uint8_t(p.stick_x)); w.u8(uint8_t(p.stick_y));
+        w.u8(p.err_no);
+    }
+    Pad get_pad(Reader& r) {
+        Pad p;
+        p.button = r.u8(); p.button |= uint16_t(r.u8()) << 8;
+        p.stick_x = int8_t(r.u8()); p.stick_y = int8_t(r.u8()); p.err_no = r.u8();
+        return p;
+    }
+
+    [[noreturn]] void end_session(int code) {
+        fflush(stderr);
+        netplay::udp::close();
+        std::_Exit(code);
+    }
+
+    void send_packet() {
+        Writer w;
+        w.u32(SESSION_MAGIC);
+        w.u32(SESSION_VERSION);
+        w.u8(uint8_t(player));
+        w.u32(remote_next);
+        uint32_t first = std::max<uint32_t>(peer_ack, uint32_t(delay));
+        uint32_t end = uint32_t(local_inputs.size());
+        uint32_t count = end > first ? std::min<uint32_t>(end - first, MAX_SEND) : 0;
+        w.u32(first);
+        w.u8(uint8_t(count));
+        for (uint32_t f = first; f < first + count; f++) {
+            for (const Pad& p : local_inputs[f]) {
+                put_pad(w, p);
+            }
+        }
+        uint32_t hashes = std::min<uint32_t>(uint32_t(local_hashes.size()), HASHES_SENT);
+        w.u8(uint8_t(hashes));
+        for (uint32_t i = 0; i < hashes; i++) {
+            uint32_t f = uint32_t(local_hashes.size()) - hashes + i;
+            w.u32(f);
+            w.u64(local_hashes[f]);
+        }
+        if (drop_percent > 0 && rand() % 100 < drop_percent) {
+            return;
+        }
+        netplay::udp::send(w.buf, w.n);
+    }
+
+    void compare_hashes() {
+        while (!remote_hashes.empty() && remote_hashes.front().first < local_hashes.size()) {
+            auto [f, h] = remote_hashes.front();
+            remote_hashes.pop_front();
+            if (local_hashes[f] != h) {
+                fprintf(stderr, "[netplay] frame %u differs from the peer's: the session has desynced\n", f);
+                for (int i = 0; i < 20; i++) {
+                    send_packet(); // so the peer sees this computer's hash for the frame too
+                }
+                end_session(2);
+            }
+            hashes_compared++;
+            compare_from = f + 1;
+        }
+    }
+
+    // Takes in one packet from the peer, if one came within timeout_ms. Returns whether one did.
+    bool receive_packet(int wait_ms) {
+        uint8_t buf[1500];
+        size_t n = netplay::udp::receive(buf, sizeof(buf), wait_ms);
+        if (n == 0) {
+            return false;
+        }
+        Reader r{ buf, n };
+        if (r.u32() != SESSION_MAGIC || r.u32() != SESSION_VERSION) {
+            return false;
+        }
+        int from = r.u8();
+        uint32_t ack = r.u32();
+        uint32_t first = r.u32();
+        uint32_t count = r.u8();
+        if (!r.ok || from == player || from >= PLAYERS) {
+            return false;
+        }
+        peer_ack = std::max(peer_ack, ack);
+        for (uint32_t f = first; f < first + count; f++) {
+            Inputs in;
+            for (Pad& p : in) {
+                p = get_pad(r);
+            }
+            if (!r.ok) {
+                return false;
+            }
+            if (remote_inputs.size() <= f) {
+                remote_inputs.resize(f + 1);
+                remote_have.resize(f + 1, 0);
+            }
+            remote_inputs[f] = in;
+            remote_have[f] = 1;
+        }
+        while (remote_next < remote_have.size() && remote_have[remote_next]) {
+            remote_next++;
+        }
+        uint32_t hashes = r.u8();
+        for (uint32_t i = 0; i < hashes && r.ok; i++) {
+            uint32_t f = r.u32();
+            uint64_t h = r.u64();
+            if (r.ok && (remote_hashes.empty() || f > remote_hashes.back().first) &&
+                    f >= compare_from) {
+                remote_hashes.emplace_back(f, h);
+            }
+        }
+        compare_hashes();
+        return true;
+    }
+
+    bool open_session(const char* peer) {
+        if (const char* p = getenv("MP_NETPLAY_PLAYER")) player = atoi(p);
+        if (const char* d = getenv("MP_NETPLAY_DELAY")) delay = std::max(1, atoi(d));
+        if (const char* f = getenv("MP_NETPLAY_FRAMES")) session_frames = strtoll(f, nullptr, 10);
+        if (const char* t = getenv("MP_NETPLAY_TIMEOUT_MS")) timeout_ms = atoi(t);
+        if (const char* d = getenv("MP_NETPLAY_DROP")) drop_percent = atoi(d);
+        uint16_t port = uint16_t(atoi(getenv("MP_NETPLAY_PORT") ? getenv("MP_NETPLAY_PORT") : "7845"));
+        if (player < 0 || player >= PLAYERS) {
+            fprintf(stderr, "[netplay] MP_NETPLAY_PLAYER is 0 or 1\n");
+            return false;
+        }
+        if (!netplay::udp::open(port, peer)) {
+            return false;
+        }
+        // The first DELAY frames have no inputs from anyone.
+        local_inputs.assign(size_t(delay), Inputs{});
+        remote_inputs.assign(size_t(delay), Inputs{});
+        remote_have.assign(size_t(delay), 1);
+        remote_next = uint32_t(delay);
+        connected_mask = (1u << PLAYERS) - 1;
+        fprintf(stderr, "[netplay] session with %s as player %d, %d frames' delay\n", peer, player + 1, delay);
+        return true;
+    }
+
+    // The frame's inputs in a session, once the peer's have come.
+    Frame session_frame(uint64_t hash) {
+        if (session_frames >= 0 && int64_t(frame) >= session_frames) {
+            // Stay until the peer has this computer's inputs for every frame it plays, then end.
+            auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            while (peer_ack < uint32_t(session_frames) && std::chrono::steady_clock::now() < until) {
+                send_packet();
+                receive_packet(16);
+            }
+            fprintf(stderr, "[netplay] played %" PRIu64 " frames with the peer: %" PRIu64 " hashes compared, every one matched\n",
+                    frame, hashes_compared);
+            end_session(0);
+        }
+        local_hashes.push_back(hash);
+
+        // This computer's pad for frame + delay.
+        Frame taken = take_local_frame();
+        Inputs mine;
+        for (int i = 0; i < SAMPLES; i++) {
+            mine[i] = taken.samples[i][0];
+        }
+        local_inputs.push_back(mine);
+
+        send_packet();
+        while (receive_packet(0)) {
+        }
+        auto last_heard = std::chrono::steady_clock::now();
+        bool told = false;
+        while (remote_next <= frame) {
+            if (receive_packet(16)) {
+                last_heard = std::chrono::steady_clock::now();
+                continue;
+            }
+            send_packet();
+            auto quiet = std::chrono::steady_clock::now() - last_heard;
+            if (!told && quiet > std::chrono::seconds(1)) {
+                fprintf(stderr, "[netplay] frame %" PRIu64 ": waiting for the peer\n", frame);
+                told = true;
+            }
+            if (quiet > std::chrono::milliseconds(timeout_ms)) {
+                fprintf(stderr, "[netplay] frame %" PRIu64 ": the peer stopped answering\n", frame);
+                end_session(3);
+            }
+        }
+
+        Frame fr;
+        fr.connected = uint8_t(connected_mask);
+        for (int i = 0; i < SAMPLES; i++) {
+            fr.samples[i][player] = local_inputs[frame][i];
+            fr.samples[i][1 - player] = remote_inputs[frame][i];
+        }
+        return fr;
+    }
+}
+
 void netplay::init(const ultramodern::input::callbacks_t& callbacks) {
     parse_minigames(getenv("MP_NETPLAY_MINIGAMES"));
     input_callbacks = callbacks;
@@ -591,7 +837,9 @@ void netplay::init(const ultramodern::input::callbacks_t& callbacks) {
     if (const char* limit = getenv("MP_NETPLAY_RECORD_FRAMES")) {
         record_frames = strtoll(limit, nullptr, 10);
     }
-    if (replay != nullptr) {
+    if (const char* peer = getenv("MP_NETPLAY_PEER")) {
+        mode = open_session(peer) ? Mode::Session : Mode::Off;
+    } else if (replay != nullptr) {
         path = replay;
         mode = open_replay() ? Mode::Replay : Mode::Off;
     } else if (record != nullptr) {
@@ -608,7 +856,7 @@ bool netplay::active() {
 }
 
 bool netplay::connected_override(int port, bool* connected) {
-    if (mode != Mode::Replay) {
+    if (mode != Mode::Replay && mode != Mode::Session) {
         return false;
     }
     *connected = (connected_mask & (1u << port)) != 0;
@@ -616,7 +864,7 @@ bool netplay::connected_override(int port, bool* connected) {
 }
 
 void netplay::note_connected(int port, bool connected) {
-    if (mode == Mode::Replay) {
+    if (mode == Mode::Replay || mode == Mode::Session) {
         return;
     }
     if (connected) {
@@ -632,7 +880,7 @@ extern "C" int mp_netplay_si_read(uint8_t* rdram) {
     if (mode == Mode::Off) {
         return 0;
     }
-    if (mode == Mode::Record) {
+    if (mode == Mode::Record || mode == Mode::Session) {
         Sample s = sample_local();
         std::lock_guard lock{ samples_mutex };
         pending.push_back(s);
@@ -837,6 +1085,8 @@ extern "C" void mp_netplay_pad_frame(uint8_t* rdram, recomp_context* ctx) {
             fflush(stderr);
             std::_Exit(0);
         }
+    } else if (mode == Mode::Session) {
+        fr = session_frame(h.total);
     } else {
         if (frame < replay_hashes.size() && replay_hashes[frame].total != h.total) {
             report_mismatch(replay_hashes[frame], h);

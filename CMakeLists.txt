@@ -239,6 +239,7 @@ target_sources(MarioPartyRecompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/src/game/recomp_api.cpp
     ${CMAKE_SOURCE_DIR}/src/game/survey.cpp
     ${CMAKE_SOURCE_DIR}/src/netplay/netplay.cpp
+    ${CMAKE_SOURCE_DIR}/src/netplay/udp.cpp
 )
 if (MP_PATCHES)
     target_sources(MarioPartyRecompiled PRIVATE ${CMAKE_SOURCE_DIR}/src/main/register_patches.cpp)
@@ -294,6 +295,9 @@ if (MSVC)
 endif()
 
 if (WIN32)
+    # Netplay's sessions' sockets (src/netplay/udp.cpp).
+    target_link_libraries(MarioPartyRecompiled PRIVATE ws2_32)
+
     include(FetchContent)
 
     if (DEFINED ENV{SDL2_VERSION})
