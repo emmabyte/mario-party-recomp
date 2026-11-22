@@ -23,13 +23,18 @@ are taken over and what each environment variable does.
   - the count of frames drawn (`D_800F3758`) is the frame's number;
   - the CPU's count register, which five copies of Mario Party 4's `frandom` seed themselves from (Box Mountain
     Mayhem, Ground Pound, Mario Bandstand, an unused minigame, the staff roll), reads a count from the frame.
-- Two of the game's threads answer it in real time, and the logic waits on both. A process that asks the SI manager
+- Three of the game's threads answer it in real time, and the logic waits on them. A process that asks the SI manager
   (the EEPROM, the Rumble Pak) for something without blocking sleeps a frame at a time until the answer comes: during a
   session it waits for it there and then. The sound driver's thread moves the music's and the sounds' state on as it
   makes sound at each retrace, and the logic reads that back (omMain won't change scenes until the music has stopped,
   objmain copies the music's state into its own flags): during a session the thread gets two retraces from netplay at
   the start of each frame, rather than from the VI handler, makes 544, 528, 528 samples in turn rather than as many as
-  the sound card's queue asks for, and the frame starts once it has made them.
+  the sound card's queue asks for, and the frame starts once it has made them. A retrace that starts a tune gives the
+  music player its bank a retrace later, which on a console comes as the frame's logic runs, before a minigame that
+  reads the tune (Mario Bandstand) gets to it: during a session that frame's retraces go on until the player has the
+  bank, and the frames after it have as many fewer.
+  A board's background is loaded a piece at a time by two threads (`src/48D90.c`), and the board takes the finished
+  pieces each frame without waiting: during a session each piece the board sends them is finished before it goes on.
 - At each frame's start the heaps' free blocks are zeroed: a block keeps what was last written to it, some of that was
   written as real time passed (the sound library, called from a process, leaves what it read on the process's stack),
   and a block allocated again starts with it.
@@ -56,9 +61,16 @@ with `tools/netplay_rdram_diff.py`, which names each stretch that differs by its
 A recording starts at power-on and plays from the save the program starts with, so a replay starts from the same
 save (the script's folders start with none).
 
-## What the test hasn't reached yet
+## What the test reaches
 
-The script's keys play the opening, the title and Mushroom Village, so a board's own loading and the minigames are
-covered only as far as a recording gets to them. One more of the game's threads is known to answer in real time there:
-a board's background loader (threads 0x64 and 0x65, `src/48D90.c`), whose finished pieces the board takes each frame
-without waiting (`func_8004A56C`). A replay that differs there names it.
+The script's keys play the opening, the title and Mushroom Village (overlay 0x69), then go through the warp pipe to the
+hub (0x35). Each trip from the hub to the rules' board (0x3E) goes instead, by `MP_NETPLAY_MINIGAMES`, to a minigame's
+instructions screen (0x6F) and the minigame, which the four computer players play, as tools/survey.js's `minigame()`
+opens one; the hub and its results screen (0x7C) come between them. The script's default list is twelve minigames of
+every kind (1 vs 3, 2 vs 2, four players), the three that call `frandom` among them (Ground Pound, Box Mountain
+Mayhem, Mario Bandstand), and once they are played the trips go to the rules' board, which the four computers play
+(and DK's Jungle Adventure, 0x36, after it). The netplay log names each overlay as the session goes to it
+(`[netplay] frame N: overlay 0xNN`) and each minigame it asks for, so a run's log shows what it covered.
+
+The list is the test's, the same for the recording and the replays; a session between players goes where the game
+goes.

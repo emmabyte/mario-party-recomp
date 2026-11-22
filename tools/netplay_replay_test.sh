@@ -8,7 +8,12 @@
 #
 # It runs headless on Xvfb, drawn by any Vulkan driver (Mesa's lavapipe will do), with no sound. The keys are the
 # keyboard's defaults: Enter (Start) through the logos, the opening and the title into Mushroom Village, then Space (A)
-# through Toad's messages and the warp pipe to the board Toad teaches the rules on, which four computer players play.
+# through Toad's messages and the warp pipe to the board Toad teaches the rules on, which four computer players play,
+# with Enter now and then for the minigames' instructions screens. 54000 frames is 30 minutes.
+#
+# Each trip from the hub to the rules' board goes instead to a minigame of MP_NETPLAY_MINIGAMES (netplay.cpp says how),
+# the same for the recording and the replays: by default a spread of kinds, the three that call frandom (Ground Pound,
+# Box Mountain Mayhem, Mario Bandstand) among them, played by the four computers. Set it empty for the board alone.
 set -euo pipefail
 
 build="$(realpath "$1")"
@@ -16,6 +21,7 @@ rom="$(realpath "$2")"
 out="$(realpath -m "$3")"
 frames="${4:-5400}"
 repo="$(cd "$(dirname "$0")/.." && pwd)"
+minigames="${MP_NETPLAY_MINIGAMES-0x12:0,1,1,1;0x17:0,1,2,3;0x26:0,1,2,3;0x1E:0,1,2,3;0x1D:0,0,1,1;0x0F:0,1,1,1;0x2D:0,1,2,3;0x22:0,1,2,3;0x13:0,1,2,3;0x33:0,1,1,1;0x2E:0,1,2,3;0x0D:0,1,2,3}"
 mkdir -p "$out"
 
 display=":${NETPLAY_TEST_DISPLAY:-97}"
@@ -37,9 +43,10 @@ new_run() {
     echo "$dir"
 }
 
-# Keys to the game's window until the program exits: Enter for the first 70 seconds, then Space.
+# Keys to the game's window until the program exits: Enter for the first 70 seconds, then Space, with Enter every
+# eighth press, which leaves a minigame's instructions screen for the minigame.
 drive() {
-    local pid=$1 start=$SECONDS window=""
+    local pid=$1 start=$SECONDS window="" n=0
     while kill -0 "$pid" 2>/dev/null; do
         if [ -z "$window" ]; then
             window="$(xdotool search --pid "$pid" 2>/dev/null | head -1 || true)"
@@ -49,7 +56,12 @@ drive() {
             xdotool key --delay 120 Return 2>/dev/null || true
             sleep 2.5
         else
-            xdotool key --delay 120 space 2>/dev/null || true
+            n=$((n + 1))
+            if [ $((n % 8)) -eq 0 ]; then
+                xdotool key --delay 120 Return 2>/dev/null || true
+            else
+                xdotool key --delay 120 space 2>/dev/null || true
+            fi
             sleep 1.5
         fi
     done
@@ -59,7 +71,7 @@ drive() {
 run() {
     local name=$1; shift
     local dir; dir="$(new_run "$name")"
-    (cd "$dir" && exec env "$@" "$build/MarioPartyRecompiled" --boot --window 640x480) > "$out/$name.log" 2>&1 < /dev/null &
+    (cd "$dir" && exec env MP_NETPLAY_MINIGAMES="$minigames" "$@" "$build/MarioPartyRecompiled" --boot --window 640x480) > "$out/$name.log" 2>&1 < /dev/null &
     pid=$!
 }
 

@@ -32,13 +32,14 @@
 //   netplay is on, at each frame's start.
 // - The CPU's count register, which five copies of Mario Party 4's frandom (Box Mountain Mayhem, Ground Pound, Mario
 //   Bandstand, an unused minigame, the staff roll) seed themselves from: a count from the frame netplay is on.
-// And it waits on two of the game's threads, whose answers come as real time passes:
+// And it waits on three of the game's threads, whose answers come as real time passes:
 // - The SI manager's (src/engine/siman.c): a process that asks it for something and doesn't want to block sleeps a
 //   frame at a time until the answer comes. During a session it waits for the answer there and then.
 // - The sound driver's (func_800130E8): it makes sound at each retrace and moves the music's and the sounds' state on
 //   as it does, and the logic reads that state back (omMain waits for the music to stop before it changes scenes).
 //   During a session it gets two retraces from netplay at each frame's start, makes a fixed number of samples at
 //   each, and the frame waits for it (step_audio).
+// - A board's background loader's (src/48D90.c): the board waits for each piece it sends to be finished.
 // What the hash leaves out, and the heap's free blocks it zeroes, are by `excluded` and hash_rdram.
 //
 // The environment:
@@ -512,7 +513,71 @@ namespace {
     }
 }
 
+extern "C" gpr mp_survey_vram();
+
+// The test's minigames (MP_NETPLAY_MINIGAMES, "id:g0,g1,g2,g3;..." in hex and decimal): the ones the session plays in
+// place of the trips from the hub (0x35) to the rules' board (0x3E), one a trip, each by its instructions screen
+// (0x6F) as tools/survey.js's minigame() opens one, so a test reaches the minigames in its 30 minutes, which play
+// through the board's turns would reach only after the rules. Each is asked for by the frame's logic alone, on the
+// frame the game is on the hub with no request left, so a replay given the same list asks on the same frames.
+namespace {
+    struct Minigame {
+        uint16_t id;
+        uint8_t groups[4];
+    };
+    std::vector<Minigame> minigames;
+    size_t next_minigame = 0;
+    const Minigame* current_minigame = nullptr;
+
+    constexpr gpr OVERLAY_NOW = (int32_t)0x800F09F4;
+    constexpr gpr MINIGAME_ID_WORD = (int32_t)0x800ED5DC; // its low half, GwSystem's minigame ID (0x800ED5DE)
+    constexpr gpr GW_PLAYER = (int32_t)0x800F32B0;        // 0x30 bytes a player, the group the top byte
+    constexpr int SURVEY_REQUEST = 0x08, SURVEY_FROM = 0x0C, SURVEY_OVERLAY = 0x10, SURVEY_EVENT = 0x14,
+                  SURVEY_STAT = 0x18;
+
+    void parse_minigames(const char* p) {
+        while (p != nullptr && *p != '\0') {
+            char* end;
+            Minigame m{};
+            m.id = uint16_t(strtoul(p, &end, 0));
+            for (int i = 0; i < 4 && *end == (i == 0 ? ':' : ','); i++) {
+                m.groups[i] = uint8_t(strtoul(end + 1, &end, 0));
+            }
+            minigames.push_back(m);
+            p = (*end == ';') ? end + 1 : nullptr;
+        }
+    }
+
+    void step_minigames(uint8_t* rdram) {
+        gpr survey = mp_survey_vram();
+        if (minigames.empty() || survey == 0 || MEM_W(0, OVERLAY_NOW) != 0x35) {
+            return;
+        }
+        if (MEM_W(SURVEY_REQUEST, survey) == 0) {
+            current_minigame = nullptr;
+            if (next_minigame < minigames.size()) {
+                current_minigame = &minigames[next_minigame++];
+                MEM_W(SURVEY_FROM, survey) = 0x3E;
+                MEM_W(SURVEY_OVERLAY, survey) = 0x6F;
+                MEM_W(SURVEY_EVENT, survey) = 0;
+                MEM_W(SURVEY_STAT, survey) = 0x94;
+                MEM_W(SURVEY_REQUEST, survey) = 1;
+                fprintf(stderr, "[netplay] frame %" PRIu64 ": asking for minigame 0x%02X\n", frame,
+                        current_minigame->id);
+            }
+        }
+        if (current_minigame != nullptr) {
+            for (int i = 0; i < 4; i++) {
+                gpr a = GW_PLAYER + i * 0x30;
+                MEM_W(0, a) = int32_t((uint32_t(MEM_W(0, a)) & 0x00FFFFFFu) | (uint32_t(current_minigame->groups[i]) << 24));
+            }
+            MEM_W(0, MINIGAME_ID_WORD) = int32_t((uint32_t(MEM_W(0, MINIGAME_ID_WORD)) & 0xFFFF0000u) | current_minigame->id);
+        }
+    }
+}
+
 void netplay::init(const ultramodern::input::callbacks_t& callbacks) {
+    parse_minigames(getenv("MP_NETPLAY_MINIGAMES"));
     input_callbacks = callbacks;
     const char* record = getenv("MP_NETPLAY_RECORD");
     const char* replay = getenv("MP_NETPLAY_REPLAY");
@@ -588,7 +653,18 @@ extern "C" int mp_netplay_si_read(uint8_t* rdram) {
 // change on is the frame the thread got to it in real time. During a session the thread gets its retraces from
 // netplay instead, two at the start of each frame, and the frame starts once it has made both: the sound is made as
 // fast as the game runs, and what the logic reads of it is the same frame for frame on every computer.
+//
+// One thing the logic reads would come too early so: the music player, which the thread starts a tune on by giving it
+// its bank and its sequence and marking it playing (func_8000B844, state 1 in D_800CDAEC), and which takes the bank a
+// retrace later, as the library takes events. On a console the next retrace comes as the frame's logic runs, before a
+// minigame that reads the tune's channels (Mario Bandstand, func_8000C748 at its start) gets to them; with both of the
+// frame's retraces before the logic, it reads a player marked playing with no bank (a null pointer) or the last tune's.
+// So a frame whose retraces start a tune has more, up to four, until the player has its bank (one, as the library
+// goes), before its logic, and the frames after it have that many fewer: two a frame still, over a few frames.
 namespace {
+    constexpr uint32_t MUSIC_PLAYER = 0x800CDAD4; // the music's ALSeqPlayer*; its bank is at +0x20
+    int audio_borrowed = 0;    // retraces frames have taken early from the frames after them
+    uint32_t tune_bank = 0;    // the bank of a tune the thread started in this frame's retraces
     constexpr uint32_t CLIENT_LIST = 0x800E23E0; // the VI handler's clients: next, queue, the messages it wants
     constexpr uint32_t AUDIO_QUEUE = 0x800D0CE0; // D_800D0CE0: the sound driver's thread's queue (func_8001365C's)
 
@@ -617,11 +693,32 @@ namespace {
         uint32_t queue = (uint32_t(ctx->r29) - 0x40) & ~7u;
         osCreateMesgQueue(rdram, (int32_t)queue, (int32_t)(queue + 0x18), 1);
         audio_reply = queue;
-        for (int i = 0; i < 2; i++) {
+        auto retrace = [&]() {
             osSendMesg(rdram, (int32_t)AUDIO_QUEUE, 1, OS_MESG_NOBLOCK);
             osRecvMesg(rdram, (int32_t)queue, NULLPTR, OS_MESG_BLOCK);
+        };
+        int owed = std::min(audio_borrowed, 2);
+        audio_borrowed -= owed;
+        for (int i = owed; i < 2; i++) {
+            retrace();
         }
+        for (int extra = 0; extra < 4 && tune_bank != 0; extra++) {
+            uint32_t player = read_word(rdram, MUSIC_PLAYER);
+            if (in_rdram(player, 0x24) && read_word(rdram, player + 0x20) == tune_bank) {
+                break;
+            }
+            retrace();
+            audio_borrowed++;
+        }
+        tune_bank = 0;
         audio_reply = 0;
+    }
+}
+
+// The hook in the sound driver's start of a tune, as it gives the music player its bank.
+extern "C" void mp_netplay_tune_bank(gpr bank) {
+    if (mode != Mode::Off) {
+        tune_bank = uint32_t(bank);
     }
 }
 
@@ -654,6 +751,46 @@ extern "C" gpr mp_netplay_ai_length(uint8_t* rdram, gpr length) {
     return retraces % 3 == 0 ? 0x100 * 4 : 0x110 * 4;
 }
 
+// A board's background (src/48D90.c) is loaded a piece at a time by two threads of its own: func_8004A890 sends a
+// piece to the first (0x65), which reads it from the ROM, the second (0x64) decompresses it into its place, and the
+// board takes the finished ones each frame without waiting (func_8004A56C). How many are finished by a frame, and how
+// far into RDRAM the one being decompressed has got, is how long those threads ran meanwhile. During a session
+// func_8004A890 waits for each piece it sends to be finished: it takes the finished pieces already waiting off the
+// queue, waits for its own, and puts them all back in order, so the board finds them as it would have.
+namespace {
+    constexpr uint32_t LOADER_DONE = 0x800D7FD8; // D_800D7FD8: the finished pieces
+    uint32_t loader_sending = 0;
+}
+
+// The hooks in func_8004A890: as it sends a piece to the loader, and once it has.
+extern "C" void mp_netplay_loader_send(gpr piece) {
+    loader_sending = mode != Mode::Off ? uint32_t(piece) : 0;
+}
+
+extern "C" void mp_netplay_loader_sent(uint8_t* rdram, recomp_context* ctx) {
+    uint32_t piece = loader_sending;
+    loader_sending = 0;
+    if (piece == 0 || ctx->r2 != 0) {
+        return;
+    }
+    uint32_t slot = (uint32_t(ctx->r29) - 0x10) & ~3u;
+    int32_t waiting = MEM_W(8, (int32_t)LOADER_DONE);
+    std::vector<int32_t> before;
+    for (int32_t i = 0; i < waiting; i++) {
+        osRecvMesg(rdram, (int32_t)LOADER_DONE, (int32_t)slot, OS_MESG_NOBLOCK);
+        before.push_back(MEM_W(0, (int32_t)slot));
+    }
+    osRecvMesg(rdram, (int32_t)LOADER_DONE, (int32_t)slot, OS_MESG_BLOCK);
+    int32_t done = MEM_W(0, (int32_t)slot);
+    for (int32_t m : before) {
+        osSendMesg(rdram, (int32_t)LOADER_DONE, m, OS_MESG_NOBLOCK);
+    }
+    osSendMesg(rdram, (int32_t)LOADER_DONE, done, OS_MESG_NOBLOCK);
+    if (uint32_t(done) != piece) {
+        fprintf(stderr, "[netplay] the background loader finished %08X while %08X was awaited\n", uint32_t(done), piece);
+    }
+}
+
 // The hook in the VI handler's send to each of its clients (func_80063AD8): during a session, 1 to leave out the
 // retrace to the sound driver's thread, which netplay sends instead.
 extern "C" int mp_netplay_vi_client(uint8_t* rdram, gpr queue, gpr message) {
@@ -666,6 +803,16 @@ extern "C" void mp_netplay_pad_frame(uint8_t* rdram, recomp_context* ctx) {
     }
 
     step_audio(rdram, ctx);
+
+    // Each scene the session plays, as omOvlGotoEx last went to it (D_800F09F4: a board, a minigame, a menu, by the
+    // decomp's overlay numbers), so a log shows what a recording covered.
+    static int32_t overlay = -1;
+    if (MEM_W(0, (int32_t)0x800F09F4) != overlay) {
+        overlay = MEM_W(0, (int32_t)0x800F09F4);
+        fprintf(stderr, "[netplay] frame %" PRIu64 ": overlay 0x%02X\n", frame, uint32_t(overlay));
+    }
+
+    step_minigames(rdram);
 
     FrameHash h = hash_rdram(rdram);
     for (int64_t f : dump_frames) {

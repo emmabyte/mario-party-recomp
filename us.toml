@@ -36,7 +36,8 @@ renamed = [
 #   took;
 # - the sound driver's thread gets its retraces from netplay, two at the start of each frame, which it makes the sound
 #   of before the frame goes on, rather than from the VI handler, and makes as many samples at each as a console
-#   playing in time would, rather than as many as the sound still queued on this computer asks for.
+#   playing in time would, rather than as many as the sound still queued on this computer asks for;
+# - a board's background loader finishes each piece the board sends it before the board goes on.
 # With no session each hook returns at once, or hands back the value it was given.
 [[patches.hook]]
 func = "func_80013974"
@@ -115,12 +116,30 @@ func = "func_800130E8"
 before_vram = 0x80013144
 text = "{ void mp_netplay_audio_got(uint8_t*, gpr); mp_netplay_audio_got(rdram, MEM_W(0, ctx->r29 + 0x10)); }"
 
+# The sound driver's start of a tune (func_8000B844, src/B980.c), as it gives the music player the tune's bank: during
+# a session the frame's retraces go on until the player has taken it.
+[[patches.hook]]
+func = "func_8000B844"
+before_vram = 0x8000BA44
+text = "{ void mp_netplay_tune_bank(gpr); mp_netplay_tune_bank(MEM_W(0x4, ctx->r2)); }"
+
 # The sound driver's thread's count of the sound still to play (func_80013234, after osAiGetLength): during a session,
 # a count from the frame, so each retrace makes the same number of samples on every computer.
 [[patches.hook]]
 func = "func_80013234"
 before_vram = 0x80013280
 text = "{ gpr mp_netplay_ai_length(uint8_t*, gpr); ctx->r2 = mp_netplay_ai_length(rdram, ctx->r2); }"
+
+# A board's background loader (func_8004A890, src/48D90.c): during a session, each piece it sends is waited for.
+[[patches.hook]]
+func = "func_8004A890"
+before_vram = 0x8004A930
+text = "{ void mp_netplay_loader_send(gpr); mp_netplay_loader_send(ctx->r5); }"
+
+[[patches.hook]]
+func = "func_8004A890"
+before_vram = 0x8004A938
+text = "{ void mp_netplay_loader_sent(uint8_t*, recomp_context*); mp_netplay_loader_sent(rdram, ctx); }"
 
 # The survey (patches/survey.c): the overlay a script asked for, in place of the one the game goes to.
 [[patches.hook]]
