@@ -6,9 +6,9 @@ mods enabled and the same Board Movement and Map Scrolling settings. One player 
 
 1. Everyone: start MarioPartyRecompiled and pick your ROM with Load ROM the first time.
 2. The host: choose Online Play in the launcher, set Online Play to Host and Players to how many play (you
-   included), close the settings and choose Start Game.
-3. Each other player: choose Online Play, set Online Play to Join and type the host's address, close the settings
-   and choose Start Game. The host gives each player their number in the order they join.
+   included), and press Start Online Game at the bottom.
+3. Each other player: choose Online Play, set Online Play to Join, type the host's address and press Start Online
+   Game. The host gives each player their number in the order they join.
 4. The screen stays black while the game waits for every player (up to five minutes); then the game begins. Each
    player plays with their own first controller (or the keyboard).
 

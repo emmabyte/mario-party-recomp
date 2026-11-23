@@ -349,6 +349,7 @@ static void use_host_save(const std::vector<uint8_t>& save) {
 }
 
 void mp_netplay::start() {
+    mp_netplay::note_game_started();
     if (netplay::mode() == netplay::Mode::Off) {
         mp_netplay::start_from_settings();
     }

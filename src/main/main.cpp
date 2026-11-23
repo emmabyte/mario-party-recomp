@@ -63,7 +63,7 @@
 #include "window_icon_bmp.h"
 #endif
 
-const std::string version_string = "0.2.14-netplay-alpha.2";
+const std::string version_string = "0.2.14-netplay-alpha.3";
 
 template<typename... Ts>
 void exit_error(const char* str, Ts ...args) {
@@ -475,10 +475,19 @@ void on_launcher_init(recompui::LauncherMenu* menu) {
     // set to host or join a session (src/netplay/online_tab.cpp).
     game_options_menu->add_start_game_or_load_rom_option();
     if (mp_netplay::available()) {
-        game_options_menu->add_option("Online Play", [mod_game_id = game.mod_game_id]() {
+        game_options_menu->add_option("Online Play", [mod_game_id = game.mod_game_id, game_id = game.game_id]() {
             recompui::update_game_mod_id(mod_game_id);
             recompui::hide_all_contexts();
-            mp_netplay::open_settings_tab();
+            mp_netplay::open_settings_tab([game_id]() {
+                if (!recomp::is_rom_valid(game_id)) {
+                    recompui::open_info_prompt("Online Play", "Load your Mario Party ROM first, with Load ROM in the "
+                        "launcher.", "OK", []() {}, recompui::ButtonStyle::Primary);
+                    return;
+                }
+                recompui::config::close();
+                recomp::start_game(game_id, {});
+                recompui::hide_all_contexts();
+            });
         });
     }
     game_options_menu->add_setup_controls_option();

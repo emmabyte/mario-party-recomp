@@ -2,6 +2,7 @@
 // src/netplay/core; built without netplay (the MP_NETPLAY CMake option off), off.cpp stands in for both.
 #pragma once
 
+#include <functional>
 #include <string>
 
 #include "ultramodern/input.hpp"
@@ -19,8 +20,12 @@ namespace mp_netplay {
     void add_settings_tab();
     // Whether netplay is built in (the MP_NETPLAY CMake option): the launcher shows Online Play only then.
     bool available();
-    void open_settings_tab();
+    // Opens the Online tab from the launcher; start starts the game, as the launcher's Start Game does, for the tab's
+    // Start Online Game button.
+    void open_settings_tab(std::function<void()> start);
     bool start_from_settings();
+    // At the game's entry (start): the Online tab leaves its Start Online Game button out from then on.
+    void note_game_started();
 
     // Whether an online session is running: the sound keeps a cushion then (src/main/main.cpp).
     bool active();

@@ -3,17 +3,29 @@
 // that session at its entry (mp_netplay::start, src/main/main.cpp's game_entrypoint), unless the environment set one
 // (core/netplay_core.cpp's variables, for the tests).
 //
+// The tab is RecompFrontend's options page with a footer of its own: its Start Online Game button saves the options,
+// closes the settings and starts the game as the launcher's Start Game does (the function main.cpp gives
+// open_settings_tab). Its Config is kept here rather than by create_config_tab, which has no way to add the button,
+// so this file loads it (add_settings_tab) and saves it when the tab closes. Once the game has started the button is
+// left out: a session starts only with the game.
+//
 // A guest needs only the host's address: the host gives each guest its player, in the order they join, and says how
 // many play. The host's UDP port must be reachable from the guests (forwarded on its router, or over a VPN such as
 // Tailscale, ZeroTier or Radmin).
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "librecomp/config.hpp"
 #include "recompui/config.h"
+#include "recompui/recompui.h"
+#include "config/ui_config_page_options_menu.h"
+#include "elements/ui_button.h"
 #include "netplay.h"
 #include "core/netplay_core.h"
 
@@ -30,7 +42,9 @@ namespace {
         {Online::Join, "Join", "Join"},
     };
     const std::string tab_id = "online";
-    recomp::config::Config* online = nullptr;
+    std::unique_ptr<recomp::config::Config> online;
+    std::function<void()> start_game;
+    std::atomic<bool> game_started = false;
 
     uint32_t enum_value(const std::string& id) {
         return std::get<uint32_t>(online->get_option_value(id));
@@ -41,8 +55,37 @@ namespace {
     }
 }
 
+namespace {
+    void tell(const std::string& text) {
+        recompui::open_info_prompt("Online Play", text, "OK", []() {}, recompui::ButtonStyle::Primary);
+    }
+
+    // The footer's button: start the game with the options as they are, or say what's missing.
+    void press_start() {
+        if (game_started) {
+            tell("The game has already started. Online play starts with the game: start it again from the launcher.");
+            return;
+        }
+        switch (static_cast<Online>(enum_value("mode"))) {
+        case Online::Host:
+            break;
+        case Online::Join:
+            if (std::get<std::string>(online->get_option_value("address")).empty()) {
+                tell("Type the host's address in Host's Address first.");
+                return;
+            }
+            break;
+        default:
+            tell("Set Online Play to Host or Join first.");
+            return;
+        }
+        online->save_config();
+        start_game();
+    }
+}
+
 void mp_netplay::add_settings_tab() {
-    online = &recompui::config::create_config_tab("Online", tab_id, false);
+    online = std::make_unique<recomp::config::Config>("Online", tab_id, false);
     online->add_enum_option(
         "mode",
         "Online Play",
@@ -78,13 +121,38 @@ void mp_netplay::add_settings_tab() {
         "a VPN, forward it on your router to this computer.",
         "7845"
     );
+    online->load_config();
+
+    recompui::config::create_tab(
+        "Online",
+        tab_id,
+        [](recompui::ContextId context, recompui::Element* parent) {
+            auto page = context.create_element<recompui::ConfigPageOptionsMenu>(parent, online.get(), true);
+            if (game_started || !start_game) {
+                return;
+            }
+            recompui::ConfigHeaderFooter* footer = page->add_footer();
+            auto button = context.create_element<recompui::Button>(footer->get_right(), "Start Online Game",
+                recompui::ButtonStyle::Primary);
+            button->add_pressed_callback(press_start);
+        },
+        nullptr,
+        [](recompui::TabCloseContext) {
+            online->save_config();
+        }
+    );
 }
 
 bool mp_netplay::available() {
     return true;
 }
 
-void mp_netplay::open_settings_tab() {
+void mp_netplay::note_game_started() {
+    game_started = true;
+}
+
+void mp_netplay::open_settings_tab(std::function<void()> start) {
+    start_game = std::move(start);
     recompui::config::set_tab(tab_id);
     recompui::config::open();
 }
