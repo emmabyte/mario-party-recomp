@@ -1,4 +1,4 @@
-// A UDP socket for netplay's sessions (netplay.cpp): one bound to a local port, sending to and receiving from one
+// A UDP socket for netplay's sessions (session.cpp): one bound to a local port, sending to and receiving from one
 // peer, on Windows (Winsock) and on POSIX systems alike. The web build has none: open() fails there.
 #pragma once
 

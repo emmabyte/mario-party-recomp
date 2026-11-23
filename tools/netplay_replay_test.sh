@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Netplay's determinism test (src/netplay/netplay.cpp, docs/netplay.md): records a session of the Linux build, played
+# Netplay's determinism test (src/netplay, docs/netplay.md): records a session of the Linux build, played
 # by keys sent to its window, then replays it twice, each from a new folder as the recording started, and checks that
 # every frame's hash of RDRAM matches the recording's. A replay that differs stops at the first frame that does, names
 # the 64 KB chunks of RDRAM that differ and writes RDRAM there to <out>/rec.mpnp.frame<n>.rdram.
@@ -11,7 +11,7 @@
 # through Toad's messages and the warp pipe to the board Toad teaches the rules on, which four computer players play,
 # with Enter now and then for the minigames' instructions screens. 54000 frames is 30 minutes.
 #
-# Each trip from the hub to the rules' board goes instead to a minigame of MP_NETPLAY_MINIGAMES (netplay.cpp says how),
+# Each trip from the hub to the rules' board goes instead to a minigame of MP_NETPLAY_MINIGAMES (src/netplay/mario_party.cpp says how),
 # the same for the recording and the replays: by default a spread of kinds, the three that call frandom (Ground Pound,
 # Box Mountain Mayhem, Mario Bandstand) among them, played by the four computers. Set it empty for the board alone.
 set -euo pipefail

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Compares two dumps of RDRAM that netplay wrote (MP_NETPLAY_DUMP_FRAME, src/netplay/netplay.cpp) and names each
+# Compares two dumps of RDRAM that netplay wrote (MP_NETPLAY_DUMP_FRAME, src/netplay/core/netplay_core.cpp) and names each
 # stretch of words that differs by the symbol it lies in (syms/), with both runs' words, so the place a replay went
 # its own way can be read off.
 #

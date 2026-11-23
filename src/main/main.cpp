@@ -99,7 +99,7 @@ ultramodern::gfx_callbacks_t::gfx_data_t create_gfx() {
 // in each port a pad is plugged into: the game offers players for those ports alone. Each has a Rumble Pak in it, which
 // the game starts with osMotorInit and shakes with __osMotorAccess (the runtime's, to that port's pad): with no pak the
 // runtime's osMotorInit answers PFS_ERR_NOPACK and the game never rumbles.
-// During a netplay replay the ports are the recording's (src/netplay/netplay.cpp), which notes the ports this answers.
+// During a netplay replay the ports are the recording's (src/netplay/core), which notes the ports this answers.
 ultramodern::input::connected_device_info_t get_connected_device_info(int controller_num) {
     bool unassigned = recompinput::players::get_number_of_assigned_players() == 0;
     bool connected = (unassigned && (controller_num == 0 || (size_t)controller_num < recompinput::get_detected_controller_count())) ||
@@ -568,7 +568,7 @@ int main(int argc, char** argv) {
         .get_connected_device_info = get_connected_device_info,
     };
 
-    netplay::init(input_callbacks);
+    mp_netplay::init(input_callbacks, version_string);
 
     ultramodern::events::callbacks_t thread_callbacks{
         .vi_callback = recompinput::update_rumble,

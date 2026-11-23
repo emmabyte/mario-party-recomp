@@ -3,8 +3,20 @@
 Online play is input lockstep: each player runs the game on their own computer, only the controllers' inputs travel,
 and every copy of the game reads the same four controllers on the same frame. That only works if the game turns the
 same inputs into the same RDRAM, frame for frame, so the first part here is the test of that: a recording of a
-session's inputs and RDRAM hashes, and its replay. `src/netplay/netplay.cpp`'s header says how the game's pad reads
-are taken over and what each environment variable does.
+session's inputs and RDRAM hashes, and its replay.
+
+The code is in two parts:
+
+- `src/netplay/core`, which knows no game: record and replay, the lockstep session over UDP with its handshake, and
+  the hash of the game state. A game gives it three things (`netplay_core.h`'s `Game`): how many pad samples a frame
+  reads, the ranges of RDRAM that hold its state, and its identity, the lines two copies must share to play alike.
+  `netplay_core.cpp`'s header lists the environment variables, and `session.cpp`'s says how a session goes.
+- `src/netplay/mario_party.cpp`, Mario Party's side: the pad ring, the clocks and threads below, the state's ranges
+  and the identity (the ROM, the build and its commit, the mods enabled, Board Movement and Map Scrolling).
+
+The `MP_NETPLAY` CMake option (on by default) builds it; off, `src/netplay/off.cpp` answers us.toml's hooks as they
+answer when nothing runs. Built in, nothing runs until one of the environment variables starts a recording, a replay
+or a session.
 
 ## Where the game is fed
 
@@ -17,7 +29,7 @@ are taken over and what each environment variable does.
 - `rand8`, the game's random number generator (`src/engine/ovlman.c`), is an LCG in RDRAM, so it repeats with the
   inputs.
 - The game's logic also reads three clocks that run in real time, which no two computers share. During a session each
-  runs by the frame instead (us.toml's hooks, `src/netplay/netplay.cpp`'s header):
+  runs by the frame instead (us.toml's hooks, `src/netplay/mario_party.cpp`'s header):
   - the VI count (`D_800F383C`), which the Mini-Game House, the press Start screen and the sound effects' timers read,
     is two a frame; the main loop and the swap chain, which wait on it, read the VIs that really passed;
   - the count of frames drawn (`D_800F3758`) is the frame's number;
@@ -41,7 +53,7 @@ are taken over and what each environment variable does.
 - The hash leaves out what the runtime and the game's system threads write as real time passes and the logic never
   reads back: threads and their stacks, the scheduler's and the swap chain's queues, the framebuffers' order, the
   performance meter, the sound driver's data and heap, the Rumble Paks' state, and the stacks of the processes that are
-  alive, below where each sleeps being what was left there (`netplay.cpp`'s `excluded` and `hash_rdram`).
+  alive, below where each sleeps being what was left there (`mario_party.cpp`'s `excluded` and `state_ranges`).
 - During a replay the ports with a controller are the recording's (`get_connected_device_info`, `src/main/main.cpp`).
 
 ## The determinism test

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Netplay's session test (src/netplay/netplay.cpp, docs/netplay.md): two copies of the Linux build on one computer,
+# Netplay's session test (src/netplay, docs/netplay.md): two copies of the Linux build on one computer,
 # each a player of one session over UDP on localhost, which compare their hashes of RDRAM as they play. Player 1 is
 # played by keys sent to its window, as tools/netplay_replay_test.sh plays its recording, and player 2 by no one. Each
 # copy ends after the frames given and prints how many hashes it compared; a frame whose hashes differ ends both and

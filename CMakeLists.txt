@@ -238,9 +238,29 @@ target_sources(MarioPartyRecompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/mario-party-engine/src/model_ids.cpp
     ${CMAKE_SOURCE_DIR}/src/game/recomp_api.cpp
     ${CMAKE_SOURCE_DIR}/src/game/survey.cpp
-    ${CMAKE_SOURCE_DIR}/src/netplay/netplay.cpp
-    ${CMAKE_SOURCE_DIR}/src/netplay/udp.cpp
 )
+
+# Netplay (docs/netplay.md): its game-agnostic core (src/netplay/core) and Mario Party's side of it. Off, the hooks
+# us.toml has in the game answer as they do when no session runs, and nothing of netplay is built. The web build has
+# no UDP for a session, but records and replays.
+option(MP_NETPLAY "Build netplay (record, replay, lockstep sessions)" ON)
+if (MP_NETPLAY)
+    target_sources(MarioPartyRecompiled PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/netplay/core/netplay_core.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/core/session.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/core/udp.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/mario_party.cpp
+    )
+    # The build's commit, for the session's handshake: two copies of different commits may play differently.
+    execute_process(COMMAND git rev-parse --short=12 HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE MP_BUILD_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if (MP_BUILD_COMMIT)
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/src/netplay/mario_party.cpp PROPERTIES
+            COMPILE_DEFINITIONS "MP_BUILD_COMMIT=\"${MP_BUILD_COMMIT}\"")
+    endif()
+else()
+    target_sources(MarioPartyRecompiled PRIVATE ${CMAKE_SOURCE_DIR}/src/netplay/off.cpp)
+endif()
 if (MP_PATCHES)
     target_sources(MarioPartyRecompiled PRIVATE ${CMAKE_SOURCE_DIR}/src/main/register_patches.cpp)
     # register_patches.cpp includes the patches' section table, which the command above writes in the middle of a
@@ -295,7 +315,7 @@ if (MSVC)
 endif()
 
 if (WIN32)
-    # Netplay's sessions' sockets (src/netplay/udp.cpp).
+    # Netplay's sessions' sockets (src/netplay/core/udp.cpp).
     target_link_libraries(MarioPartyRecompiled PRIVATE ws2_32)
 
     include(FetchContent)

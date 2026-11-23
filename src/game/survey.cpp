@@ -20,7 +20,7 @@ extern "C" void recomp_survey_register(uint8_t* rdram, recomp_context* ctx) {
     survey_vram = ctx->r4;
 }
 
-// The struct's place in RDRAM, 0 until the first frame registers it: netplay's test (src/netplay/netplay.cpp) asks
+// The struct's place in RDRAM, 0 until the first frame registers it: netplay's test (src/netplay/mario_party.cpp) asks
 // through it for the minigames it plays.
 extern "C" gpr mp_survey_vram() {
     return survey_vram;

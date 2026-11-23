@@ -23,7 +23,7 @@ renamed = [
     "PlaySound",
 ]
 
-# Netplay (src/netplay/netplay.cpp says how). During a session:
+# Netplay (src/netplay/mario_party.cpp says how). During a session:
 # - the controller thread's read of the pads at each VI goes to netplay's own queue instead of the game's ring, and once
 #   a frame, as the game starts reading its ring, netplay fills it with the frame's inputs;
 # - the VI count the game keeps (D_800F383C) counts two a frame from the frame netplay is on, as the game's logic
