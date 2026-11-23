@@ -236,3 +236,16 @@ text = "{ gpr mp_model_push(uint8_t*, gpr, int32_t, gpr, int32_t, gpr, int32_t);
 func = "func_8002D614"
 before_vram = 0x8002DA80
 text = "{ void mp_model_pop(uint8_t*, gpr); mp_model_pop(rdram, (gpr)(int32_t)0x800F37DC); }"
+
+# Platform Peril's fallen platforms hidden once parked (patches/widescreen.c, widescreen_platform_parked): the end of
+# each of its platforms' two frame functions, with the platform's object in s2. The game's registers are kept around
+# the call, which is made between two of its instructions.
+[[patches.hook]]
+func = "func_800F8220_PlatformPeril"
+before_vram = 0x800F8784
+text = "{ void widescreen_platform_parked(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; widescreen_platform_parked(rdram, ctx); *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800F87A0_PlatformPeril"
+before_vram = 0x800F8ACC
+text = "{ void widescreen_platform_parked(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; widescreen_platform_parked(rdram, ctx); *ctx = saved; }"
