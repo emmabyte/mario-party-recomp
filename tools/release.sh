@@ -36,7 +36,8 @@
 # Either build can come from elsewhere: with WINDOWS_BUILD naming a folder that holds a Release build of
 # MarioPartyRecompiled from this commit (a cross-build, say), windows packs that instead of building, and run inside a
 # container of tools/docker/Dockerfile.linux's image (where there is no Docker), linux builds right there.
-# Both hold assets/ (the launcher's), recompcontrollerdb.txt and LICENSE beside the program, which works from its own
+# Both hold assets/ (the launcher's), recompcontrollerdb.txt, LICENSE and online play's launchers and how-to
+# (dist/netplay: host and join, .bat on Windows and .sh on Linux, and ONLINE.txt) beside the program, which works from its own
 # folder when it is started from another (src/main/main.cpp).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -100,6 +101,7 @@ windows)
     rm -rf "$stage" "$stage.zip"
     mkdir -p "$stage"
     cp "$build"/{MarioPartyRecompiled.exe,SDL2.dll,dxil.dll,dxcompiler.dll} recompcontrollerdb.txt LICENSE "$stage"/
+    cp dist/netplay/{host.bat,join.bat,ONLINE.txt} "$stage"/
     cp -r assets "$stage"/
     # CMake's own zip, so packing needs nothing the build doesn't.
     (cd out && cmake -E tar cf "$name-windows-x64.zip" --format=zip "$name-windows-x64")
@@ -122,6 +124,7 @@ linux)
         rm -rf \$stage \$stage.tar.gz
         mkdir -p \$stage
         cp \$build/MarioPartyRecompiled recompcontrollerdb.txt LICENSE \$stage/
+        cp dist/netplay/{host.sh,join.sh,ONLINE.txt} \$stage/
         cp -L /usr/local/lib/libSDL2-2.0.so.0 /usr/lib/x86_64-linux-gnu/libatomic.so.1 \$stage/
         patchelf --set-rpath '\$ORIGIN' \$stage/MarioPartyRecompiled
         cp -r assets \$stage/

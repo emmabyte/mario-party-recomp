@@ -1,0 +1,34 @@
+Playing Mario Party online (alpha)
+==================================
+
+Two to four players, each on their own computer with this same release, the same Mario Party (USA) ROM, the same
+mods enabled and the same Board Movement and Map Scrolling settings. One player hosts; the others join.
+
+1. The host: run host.bat (Windows) or host.sh (Linux, from a terminal). Say how many players, you included.
+2. Each other player: run join.bat or join.sh. Give the host's address, the number of players, and your own player
+   number (2, 3 or 4: each player a different one).
+3. The game's launcher opens as usual: pick your ROM with Load ROM the first time, then start the game. The screen
+   stays black until every player has started and every copy matches (up to five minutes), then the game begins.
+   Each player plays with their own first controller (or the keyboard).
+
+The host's address
+------------------
+The others must be able to reach UDP port 7845 on the host's computer:
+
+- Over the internet: forward UDP port 7845 on the host's router to the host's computer, and give the others the
+  host's public address (a site such as whatismyip.com shows it).
+- Easier: everyone joins the same Tailscale or ZeroTier network, and the host gives its address there.
+- On the same home network: the host's local address (like 192.168.1.20).
+
+Allow the program through the firewall if your computer asks.
+
+What to expect
+--------------
+- Everyone plays from the host's save. Your own save isn't changed: a guest's session saves to saves/netplay instead.
+- Every player's buttons arrive three frames (0.1 s) after they are pressed, so everyone sees the same game. If the
+  game stutters, players are far apart: try a delay of 5 or 6, the same number for every player.
+- If something goes wrong (a player leaves, the copies differ, or the games ever play differently), each copy shows
+  a message saying what happened and closes. A message about the game playing differently ("desynced") is a bug we
+  want to hear about: note the frame it names.
+
+This is an alpha: there is no menu for online play yet, and no way to rejoin a session that ended.

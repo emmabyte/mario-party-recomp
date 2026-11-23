@@ -49,12 +49,17 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
+#include "SDL.h"
 #include "recomp.h"
 #include "ultramodern/ultra64.h"
 #include "librecomp/mods.hpp"
+#include "librecomp/files.hpp"
+#include "ultramodern/ultramodern.hpp"
 #include "../../lib/mario-party-engine/src/board_options.h"
 
 #ifndef MP_BUILD_COMMIT
@@ -66,6 +71,7 @@ using netplay::Range;
 namespace {
     // The ring entries a frame drains: two, as at the game's 30 frames a second a frame spans two of the 60 VIs.
     constexpr int SAMPLES = 2;
+    constexpr size_t SAVE_SIZE = 0x200;               // 4 Kbit of EEPROM (main.cpp's SaveType::Eep4k)
 
     // The game's pad ring (src/engine/pad.c, include/engine/pad.h), by its symbols' addresses (syms/).
     constexpr gpr RING = (int32_t)0x800D1170;   // D_800D1170: 8 entries of 4 OSContPads
@@ -315,6 +321,37 @@ namespace {
 }
 
 
+// The save a session plays from: this copy's EEPROM as the runtime read it at the start (its save file, or none).
+static std::vector<uint8_t> host_save() {
+    std::vector<uint8_t> save(SAVE_SIZE, 0);
+    std::ifstream file = recomp::open_input_file_with_backup(ultramodern::get_save_file_path(), std::ios_base::binary);
+    if (file.good()) {
+        file.read(reinterpret_cast<char*>(save.data()), std::streamsize(save.size()));
+    }
+    return save;
+}
+
+// A guest plays from the host's save, kept in saves/netplay so that its own save stays as it was: what the session
+// saves goes there too.
+static void use_host_save(const std::vector<uint8_t>& save) {
+    std::filesystem::path path = ultramodern::get_save_file_path();
+    std::filesystem::path folder = path.parent_path() / "netplay";
+    std::filesystem::create_directories(folder);
+    std::vector<uint8_t> whole = save;
+    whole.resize(SAVE_SIZE, 0);
+    {
+        std::ofstream file(folder / path.filename(), std::ios_base::binary | std::ios_base::trunc);
+        file.write(reinterpret_cast<const char*>(whole.data()), std::streamsize(whole.size()));
+    }
+    std::filesystem::remove(folder / (path.filename().u8string() + u8".bak"));
+    ultramodern::change_save_file(u8"netplay", path.stem().u8string());
+    fprintf(stderr, "[netplay] playing from the host's save\n");
+}
+
+void mp_netplay::start() {
+    netplay::start();
+}
+
 void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const std::string& version) {
     build_version = version;
     parse_minigames(getenv("MP_NETPLAY_MINIGAMES"));
@@ -322,6 +359,14 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
     game.samples_per_frame = SAMPLES;
     game.state_ranges = state_ranges;
     game.identity = identity;
+    game.save = host_save;
+    game.use_save = use_host_save;
+    // A window that waits for the player, but for the tests, where no one would close it (MP_NETPLAY_NO_MESSAGES).
+    if (getenv("MP_NETPLAY_NO_MESSAGES") == nullptr) {
+        game.show_message = [](const char* title, const char* text) {
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, title, text, nullptr);
+        };
+    }
     netplay::init(game, callbacks);
 }
 

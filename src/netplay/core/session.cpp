@@ -10,7 +10,9 @@
 // It starts with a handshake, at the first frame: each guest sends the host the game's identity (netplay_core.h's
 // Game) until the host has it and has answered with its own. The session starts once the host has every guest's.
 // Identities that differ end the session, naming the lines that differ: a different ROM, build, mod or option would
-// play differently from the same inputs.
+// play differently from the same inputs. The host's hello carries its save too, and each guest plays from it in place
+// of its own (Game's save and use_save), since a different save plays differently. netplay::start runs the handshake
+// before the game starts, so a guest has the host's save before the game reads it.
 //
 // Then the packets, each frame and again every 16 ms while a frame waits. A guest's to the host: its inputs from the
 // first frame the host hasn't acknowledged, the first whole frame it still needs, and the hashes of the game state it
@@ -24,8 +26,10 @@
 
 #include <chrono>
 #include <cinttypes>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <map>
 #include <string>
@@ -37,13 +41,14 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
     constexpr uint32_t SESSION_MAGIC = 0x534E504D; // "MPNS"
-    constexpr uint32_t SESSION_VERSION = 3;
+    constexpr uint32_t SESSION_VERSION = 4;
     constexpr uint8_t KIND_HELLO = 0;
     constexpr uint8_t KIND_INPUTS = 1; // a guest's to the host
     constexpr uint8_t KIND_FRAMES = 2; // the host's to a guest
     constexpr int MAX_SEND = 24;
     constexpr int HASHES_SENT = 4;
-    constexpr size_t MAX_IDENTITY = 1200;
+    constexpr size_t MAX_IDENTITY = 800;
+    constexpr size_t MAX_SAVE = 512; // a hello carries it whole
     using Inputs = std::array<Pad, MAX_SAMPLES>;
     using Whole = std::array<Inputs, PORTS>; // a frame's inputs, every player's
 
@@ -101,8 +106,31 @@ namespace {
         Pad pad() { Pad p; p.button = u16(); p.stick_x = int8_t(u8()); p.stick_y = int8_t(u8()); p.err_no = u8(); return p; }
     };
 
+    // The save the session plays from: the host's own, which a guest has from the host's hello.
+    std::vector<uint8_t> host_save;
+
+    // What the session has said, for the player to see when it ends for a reason (Game's show_message).
+    std::string said;
+
+    // Prints a line of the session's to stderr, and keeps it.
+    [[gnu::format(printf, 1, 2)]] void say(const char* format, ...) {
+        char line[512];
+        va_list args;
+        va_start(args, format);
+        vsnprintf(line, sizeof(line), format, args);
+        va_end(args);
+        fputs(line, stderr);
+        said += strncmp(line, "[netplay] ", 10) == 0 ? line + 10 : line;
+    }
+
+    // Ends the program: 0 when a session of MP_NETPLAY_FRAMES has ended, 2 for a desync, 3 when a player went quiet
+    // or never came, 4 when the copies differ, 5 when the session
+    // couldn't start (no such host, a port in use). Any but 0 shows the player what the session said first.
     [[noreturn]] void end_session(int code) {
         fflush(stderr);
+        if (code != 0 && game.show_message != nullptr) {
+            game.show_message("Online play ended", said.c_str());
+        }
         udp::close();
         std::_Exit(code);
     }
@@ -140,6 +168,11 @@ namespace {
         w.u16(uint16_t(n));
         for (size_t i = 0; i < n; i++) {
             w.u8(uint8_t(identity[i]));
+        }
+        // The host's save, which the guests play from.
+        w.u16(uint16_t(host_save.size()));
+        for (uint8_t b : host_save) {
+            w.u8(b);
         }
         send(to, w);
     }
@@ -232,19 +265,19 @@ namespace {
             from.identity_ok = true;
             return;
         }
-        fprintf(stderr, "[netplay] player %d's copy differs from this one, so the two would play differently:\n", who + 1);
+        say("[netplay] player %d's copy differs from this one, so the two would play differently:\n", who + 1);
         auto a = lines(ours), b = lines(theirs);
         for (auto& [name, value] : a) {
             auto it = b.find(name);
             if (it == b.end()) {
-                fprintf(stderr, "[netplay]   %s: here%s, theirs none\n", name.c_str(), value.c_str());
+                say("[netplay]   %s: here%s, theirs none\n", name.c_str(), value.c_str());
             } else if (it->second != value) {
-                fprintf(stderr, "[netplay]   %s: here%s, theirs%s\n", name.c_str(), value.c_str(), it->second.c_str());
+                say("[netplay]   %s: here%s, theirs%s\n", name.c_str(), value.c_str(), it->second.c_str());
             }
         }
         for (auto& [name, value] : b) {
             if (a.find(name) == a.end()) {
-                fprintf(stderr, "[netplay]   %s: none here, theirs%s\n", name.c_str(), value.c_str());
+                say("[netplay]   %s: none here, theirs%s\n", name.c_str(), value.c_str());
             }
         }
         for (int i = 0; i < 10; i++) {
@@ -258,7 +291,7 @@ namespace {
             auto [f, h] = from.hashes.front();
             from.hashes.pop_front();
             if (local_hashes[f] != h) {
-                fprintf(stderr, "[netplay] frame %u differs from player %d's: the session has desynced\n", f, who + 1);
+                say("[netplay] frame %u differs from player %d's: the session has desynced\n", f, who + 1);
                 for (int i = 0; i < 20; i++) {
                     send_all(); // so the others see this copy's hash for the frame too
                 }
@@ -366,7 +399,7 @@ namespace {
             // A guest's address is where its packets come from: what its router shows the host.
             if (kind == KIND_HELLO) {
                 if (!from.known) {
-                    fprintf(stderr, "[netplay] player %d is at %s\n", who + 1, from_endpoint.text().c_str());
+                    say("[netplay] player %d is at %s\n", who + 1, from_endpoint.text().c_str());
                 }
                 from.endpoint = from_endpoint;
                 from.known = true;
@@ -385,13 +418,18 @@ namespace {
             for (uint16_t i = 0; i < size && r.ok; i++) {
                 theirs.push_back(char(r.u8()));
             }
+            uint16_t save_size = r.u16();
+            std::vector<uint8_t> save;
+            for (uint16_t i = 0; i < save_size && r.ok; i++) {
+                save.push_back(r.u8());
+            }
             if (!r.ok) {
                 return true;
             }
             if (their_players != players) {
                 // The ports with a controller are the session's from power-on, before the handshake: every copy must
                 // start with the same count.
-                fprintf(stderr, "[netplay] player %d's session is of %d players, this one's of %d\n", who + 1,
+                say("[netplay] player %d's session is of %d players, this one's of %d\n", who + 1,
                         their_players, players);
                 for (int i = 0; i < 10; i++) {
                     send_hello(from);
@@ -399,6 +437,9 @@ namespace {
                 end_session(4);
             }
             check_identity(from, who, theirs);
+            if (!hosting) {
+                host_save = std::move(save);
+            }
             from.saw_ours = from.saw_ours || saw;
             if (handshaken && !saw) {
                 send_hello(from); // it is still waiting for this copy's identity
@@ -441,10 +482,18 @@ namespace {
 
     void handshake() {
         identity = game.identity != nullptr ? game.identity() : std::string();
+        identity += "delay: " + std::to_string(delay) + " frames\n"; // a frame's inputs are its players' from as far back
+        if (hosting && game.save != nullptr) {
+            host_save = game.save();
+            if (host_save.size() > MAX_SAVE) {
+                say("[netplay] the save is %zu bytes, more than a hello carries\n", host_save.size());
+                end_session(5);
+            }
+        }
         if (hosting) {
-            fprintf(stderr, "[netplay] waiting for %d players to join\n", players - 1);
+            say("[netplay] waiting for %d players to join\n", players - 1);
         } else {
-            fprintf(stderr, "[netplay] waiting for the host\n");
+            say("[netplay] waiting for the host\n");
         }
         auto until = Clock::now() + std::chrono::minutes(5);
         auto next_hello = Clock::now();
@@ -455,7 +504,7 @@ namespace {
                 next_hello = now + std::chrono::milliseconds(50);
             }
             if (now > until) {
-                fprintf(stderr, hosting ? "[netplay] not every player joined\n" : "[netplay] the host never answered\n");
+                say(hosting ? "[netplay] not every player joined\n" : "[netplay] the host never answered\n");
                 end_session(3);
             }
             receive_packet(16);
@@ -465,7 +514,7 @@ namespace {
             hello_everyone();
         }
         handshaken = true;
-        fprintf(stderr, "[netplay] every copy matches: the session starts with %d players\n", players);
+        say("[netplay] every copy matches: the session starts with %d players\n", players);
     }
 
     // Whether the frame's inputs from everyone are here.
@@ -517,16 +566,18 @@ bool netplay::detail::open_session(const char* peer, int host_players) {
         player = p != nullptr ? atoi(p) : 1;
         players = n != nullptr ? atoi(n) : 2;
         if (players < 2 || players > PORTS || player < 1 || player >= players) {
-            fprintf(stderr, "[netplay] a guest's MP_NETPLAY_PLAYERS is 2 to 4 and its MP_NETPLAY_PLAYER 1 to one less\n");
-            return false;
+            say("[netplay] a guest's MP_NETPLAY_PLAYERS is 2 to 4 and its MP_NETPLAY_PLAYER 1 to one less\n");
+            end_session(5);
         }
         if (!udp::resolve(peer, remotes[0].endpoint)) {
-            return false;
+            say("[netplay] couldn't find the host at %s (an address and port, like 203.0.113.5:7845)\n", peer);
+            end_session(5);
         }
         remotes[0].known = true;
     }
     if (!udp::open(port)) {
-        return false;
+        say("[netplay] couldn't open UDP port %u: is another copy of the game using it?\n", unsigned(port));
+        end_session(5);
     }
     local_inputs.assign(size_t(delay), Inputs{});
     for (Remote& r : remotes) {
@@ -539,10 +590,10 @@ bool netplay::detail::open_session(const char* peer, int host_players) {
     // The ports with a controller, from power-on: one for each player.
     connected_mask = (1u << players) - 1;
     if (hosting) {
-        fprintf(stderr, "[netplay] hosting a session of %d players on UDP port %u, %d frames' delay\n", players,
+        say("[netplay] hosting a session of %d players on UDP port %u, %d frames' delay\n", players,
                 unsigned(port), delay);
     } else {
-        fprintf(stderr, "[netplay] joining the session at %s as player %d, %d frames' delay\n", peer, player + 1, delay);
+        say("[netplay] joining the session at %s as player %d, %d frames' delay\n", peer, player + 1, delay);
     }
     return true;
 }
@@ -558,7 +609,7 @@ Frame netplay::detail::session_frame(uint64_t hash) {
             send_all();
             receive_packet(16);
         }
-        fprintf(stderr, "[netplay] played %" PRIu64 " frames: %" PRIu64 " hashes compared, every one matched\n",
+        say("[netplay] played %" PRIu64 " frames: %" PRIu64 " hashes compared, every one matched\n",
                 frame_no, hashes_compared);
         end_session(0);
     }
@@ -584,11 +635,11 @@ Frame netplay::detail::session_frame(uint64_t hash) {
         int who = 0;
         auto silent = Clock::now() - quietest(who).heard;
         if (!told && silent > std::chrono::seconds(1)) {
-            fprintf(stderr, "[netplay] frame %" PRIu64 ": waiting for player %d\n", frame_no, who + 1);
+            say("[netplay] frame %" PRIu64 ": waiting for player %d\n", frame_no, who + 1);
             told = true;
         }
         if (silent > std::chrono::milliseconds(timeout_ms)) {
-            fprintf(stderr, "[netplay] frame %" PRIu64 ": player %d stopped answering\n", frame_no, who + 1);
+            say("[netplay] frame %" PRIu64 ": player %d stopped answering\n", frame_no, who + 1);
             end_session(3);
         }
     }
@@ -605,4 +656,14 @@ Frame netplay::detail::session_frame(uint64_t hash) {
         }
     }
     return fr;
+}
+
+void netplay::detail::start_session() {
+    if (handshaken) {
+        return;
+    }
+    handshake();
+    if (!hosting && game.use_save != nullptr) {
+        game.use_save(host_save);
+    }
 }

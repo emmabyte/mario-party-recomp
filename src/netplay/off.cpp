@@ -6,6 +6,7 @@
 #include "recomp.h"
 
 void mp_netplay::init(const ultramodern::input::callbacks_t&, const std::string&) {}
+void mp_netplay::start() {}
 bool netplay::connected_override(int, bool*) { return false; }
 void netplay::note_connected(int, bool) {}
 

@@ -15,6 +15,8 @@
 // - For either: MP_NETPLAY_DELAY (frames of input delay, 3 by default), MP_NETPLAY_FRAMES (ends the session after
 //   that many frames, for tests), MP_NETPLAY_TIMEOUT_MS (how long a frame waits for a silent player, 15000) and
 //   MP_NETPLAY_DROP (a share of packets to drop, in percent, to test a lossy link).
+// - MP_NETPLAY_NO_MESSAGES=1: a session that ends for a reason only prints it, with no window for the player to close
+//   (for tests; src/netplay/mario_party.cpp).
 
 #include "netplay_core.h"
 #include "netplay_internal.h"
@@ -341,6 +343,12 @@ void netplay::init(const Game& g, const ultramodern::input::callbacks_t& callbac
         if (current_mode == Mode::Record) {
             fprintf(stderr, "[netplay] recording to %s\n", path.c_str());
         }
+    }
+}
+
+void netplay::start() {
+    if (detail::current_mode == Mode::Session) {
+        detail::start_session();
     }
 }
 

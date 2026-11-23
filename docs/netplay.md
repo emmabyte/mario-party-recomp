@@ -70,14 +70,23 @@ MP_NETPLAY_PEER=<host's address>:7845 MP_NETPLAY_PLAYERS=3 MP_NETPLAY_PLAYER=1 .
 MP_NETPLAY_PEER=<host's address>:7845 MP_NETPLAY_PLAYERS=3 MP_NETPLAY_PLAYER=2 ./MarioPartyRecompiled
 ```
 
-Each plays with their own first controller. The game starts once every copy has joined and the copies match; a copy
-that differs says what differs and quits. Only the host's UDP port (7845, or `MP_NETPLAY_PORT`) must be reachable from
+A release carries `dist/netplay`'s launchers beside the program, `host` and `join` (`.bat` on Windows, `.sh` on
+Linux), which ask for these, and `ONLINE.txt`, the players' how-to.
+
+Each plays with their own first controller. The handshake runs at the game's entry, before it reads its save
+(`mp_netplay::start`, from `src/main/main.cpp`), and the game starts once every copy has joined and the copies match
+(the delay too); a copy that differs says what differs and quits. Every copy plays from the host's save: the host's
+hello carries it, and a guest writes it to `saves/netplay` and plays from there, its own save untouched. A session that
+ends for a reason (copies that differ, a player gone, a desync, a host not found) shows it in a window before the
+program closes, as stderr reaches no one from the Windows build (`MP_NETPLAY_NO_MESSAGES` leaves the window out, for
+the tests). Only the host's UDP port (7845, or `MP_NETPLAY_PORT`) must be reachable from
 the others: over the internet, that means forwarding it on the host's router. Every frame waits for every player's
 inputs, three frames after they were pressed (`MP_NETPLAY_DELAY`); a longer distance needs a longer delay. If two
 copies ever differ, both stop and name the frame.
 
 `tools/netplay_session_test.sh` plays a session of copies on one computer (`NETPLAY_TEST_PLAYERS`, with packets dropped
-at `MP_NETPLAY_DROP` percent to test a lossy link).
+at `MP_NETPLAY_DROP` percent to test a lossy link, and `NETPLAY_TEST_GUEST_SAVE` a save the guests start with that the
+host's replaces).
 
 ## The determinism test
 

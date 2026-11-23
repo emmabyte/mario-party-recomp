@@ -63,7 +63,7 @@
 #include "window_icon_bmp.h"
 #endif
 
-const std::string version_string = "0.2.14";
+const std::string version_string = "0.2.14-netplay-alpha.1";
 
 template<typename... Ts>
 void exit_error(const char* str, Ts ...args) {
@@ -334,6 +334,13 @@ RspUcodeFunc* get_rsp_microcode(const OSTask* task) {
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 gpr get_entrypoint_address();
 
+// The game's entry, after the runtime has read the save and before the game reads it: an online session's handshake
+// first, which waits for every player and gives a guest the host's save (src/netplay).
+static void game_entrypoint(uint8_t* rdram, recomp_context* ctx) {
+    mp_netplay::start();
+    recomp_entrypoint(rdram, ctx);
+}
+
 std::vector<recomp::GameEntry> supported_games = {
     {
         // XXH3 of Mario Party (USA), SHA-1 1159bd56730094bfc71be30113e1cfc8bacf34f3. Its code is stored uncompressed.
@@ -347,7 +354,7 @@ std::vector<recomp::GameEntry> supported_games = {
         .thumbnail_bytes = std::span<const char>(icon_bytes),
         .is_enabled = true,
         .entrypoint_address = get_entrypoint_address(),
-        .entrypoint = recomp_entrypoint,
+        .entrypoint = game_entrypoint,
     },
 };
 

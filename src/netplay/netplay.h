@@ -10,6 +10,9 @@ namespace mp_netplay {
     // Reads the session from the environment (core/netplay_core.cpp lists the variables) and keeps the input callbacks
     // the runtime is given. version is the build's, for the handshake.
     void init(const ultramodern::input::callbacks_t& callbacks, const std::string& version);
+
+    // At the game's entry, before it reads its save: a session's handshake, and the host's save for a guest.
+    void start();
 }
 
 namespace netplay {

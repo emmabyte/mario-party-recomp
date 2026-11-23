@@ -58,6 +58,14 @@ namespace netplay {
         // Lines of "name: value", everything two copies must share to play alike. A session starts only when both
         // copies' lines match, and names the ones that differ when they don't.
         std::string (*identity)() = nullptr;
+        // Shows the player why a session ended (a desync, a player gone, copies that differ) before the program
+        // closes, where stderr may reach no one (a windowed program on Windows). Optional.
+        void (*show_message)(const char* title, const char* text) = nullptr;
+        // The save a session plays from: the host's (save, at most 512 bytes), which each guest plays from in place of
+        // its own (use_save, before the game reads it), since the game plays differently from a different save.
+        // Optional, for a game with no save.
+        std::vector<uint8_t> (*save)() = nullptr;
+        void (*use_save)(const std::vector<uint8_t>& host_save) = nullptr;
     };
 
     enum class Mode { Off, Record, Replay, Session };
@@ -74,6 +82,11 @@ namespace netplay {
     // At each VI, on the game's controller thread, in place of its own pad read: takes a sample of this computer's
     // pads for the next frame. Returns whether netplay drives the pads (the game skips its own read if so).
     bool sample_pads();
+
+    // Before the game starts (before it reads its save): a session's handshake, which waits for every player, and the
+    // host's save for a guest (Game's use_save). Does nothing but in a session. Without it, the handshake comes at the
+    // first frame, and a guest plays from its own save.
+    void start();
 
     // Once a game frame, at the one point the game takes its pads' samples: hashes the game state, records or
     // compares or exchanges it, and returns the frame's inputs, which the game hands its logic in place of its own.

@@ -28,7 +28,9 @@ namespace netplay::detail {
     Frame take_local_frame();
 
     // session.cpp
-    // peer: the host's address, for a guest; host_players: the players, for the host, else 0.
+    // peer: the host's address, for a guest; host_players: the players, for the host, else 0. A session that can't
+    // start (no such host, a port in use) ends the program, saying why.
     bool open_session(const char* peer, int host_players);
     Frame session_frame(uint64_t hash);
+    void start_session();
 }
