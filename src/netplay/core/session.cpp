@@ -1,15 +1,16 @@
 // A session between copies of the game: delay-based lockstep over UDP for two to four players, through a host. The
-// host (MP_NETPLAY_HOST=<players>) plays port 1 and listens on MP_NETPLAY_PORT; each guest (MP_NETPLAY_PEER=<host's
-// address>:<port>, MP_NETPLAY_PLAYERS=<players>, MP_NETPLAY_PLAYER=<its port, 1 to 3>) plays its port with its own first pad and sends only to the
-// host. A frame's inputs are every player's pad as each copy sampled it MP_NETPLAY_DELAY frames earlier: each guest
-// sends the host its own, the host puts each frame together once it has every player's, and sends the whole frame to
+// host plays port 1 and listens on its port; each guest knows only the host's address, plays the port the host gives
+// it (the first free, as it joins) with its own first pad, and sends only to the host (SessionSettings,
+// netplay_core.h). A frame's inputs are every player's pad as each copy sampled it the session's delay in frames
+// earlier: each guest sends the host its own, the host puts each frame together once it has every player's, and sends the whole frame to
 // every guest. So every copy runs the same frames on the same inputs, and each game turns them into the same state (a
 // recording's replay tests that it does). Only the host needs a port others can reach. The first DELAY frames have no
 // inputs from anyone.
 //
-// It starts with a handshake, at the first frame: each guest sends the host the game's identity (netplay_core.h's
-// Game) until the host has it and has answered with its own. The session starts once the host has every guest's.
-// Identities that differ end the session, naming the lines that differ: a different ROM, build, mod or option would
+// It starts with a handshake, before the game's entry (netplay::start): each guest sends the host the game's identity
+// (netplay_core.h's Game) until the host has it and has answered with its own, the guest's port, how many play, and
+// the delay, which it chooses from the round trips the hellos' clocks measure. The session starts once the host has
+// every guest's. Identities that differ end the session, naming the lines that differ: a different ROM, build, mod or option would
 // play differently from the same inputs. The host's hello carries its save too, and each guest plays from it in place
 // of its own (Game's save and use_save), since a different save plays differently. netplay::start runs the handshake
 // before the game starts, so a guest has the host's save before the game reads it.
@@ -24,7 +25,9 @@
 #include "netplay_internal.h"
 #include "udp.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cinttypes>
 #include <cstdarg>
 #include <cstdio>
@@ -33,6 +36,7 @@
 #include <deque>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace netplay;
@@ -41,7 +45,7 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
     constexpr uint32_t SESSION_MAGIC = 0x534E504D; // "MPNS"
-    constexpr uint32_t SESSION_VERSION = 4;
+    constexpr uint32_t SESSION_VERSION = 5;
     constexpr uint8_t KIND_HELLO = 0;
     constexpr uint8_t KIND_INPUTS = 1; // a guest's to the host
     constexpr uint8_t KIND_FRAMES = 2; // the host's to a guest
@@ -49,6 +53,7 @@ namespace {
     constexpr int HASHES_SENT = 4;
     constexpr size_t MAX_IDENTITY = 800;
     constexpr size_t MAX_SAVE = 512; // a hello carries it whole
+    constexpr uint8_t UNASSIGNED = 0xFF; // a guest's player before the host gives it one
     using Inputs = std::array<Pad, MAX_SAMPLES>;
     using Whole = std::array<Inputs, PORTS>; // a frame's inputs, every player's
 
@@ -56,12 +61,15 @@ namespace {
     int player = 0;
     int players = 2;
     int delay = 3;
+    bool delay_forced = false; // MP_NETPLAY_DELAY, on the host: no measuring
+    bool delay_known = false;  // the host has chosen the session's delay (a guest: and sent it)
     int64_t session_frames = -1;
     int timeout_ms = 15000;
     int drop_percent = 0;
 
     std::string identity;
     bool handshaken = false;
+    int jitter_ms = 0; // MP_NETPLAY_JITTER_MS: a stall of up to this long before one frame in four, for the tests
 
     std::vector<Inputs> local_inputs;   // by frame
     std::vector<uint64_t> local_hashes; // by frame
@@ -81,7 +89,23 @@ namespace {
         std::deque<std::pair<uint32_t, uint64_t>> hashes; // its hashes, not yet compared
         uint32_t compare_from = 0;
         Clock::time_point heard = Clock::now();
+        // Round trips, from the hellos: each carries its sender's clock and the last one it had from the other.
+        uint64_t their_clock = 0;
+        uint64_t their_clock_at = 0; // this copy's clock when their_clock came
+        std::vector<double> rtts_ms;
     };
+
+    int slot_for(const udp::Endpoint& from);
+
+    uint64_t clock_us() {
+        return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count()) | 1;
+    }
+
+    double median_rtt(const Remote& r) {
+        std::vector<double> v = r.rtts_ms;
+        std::sort(v.begin(), v.end());
+        return v.empty() ? 0.0 : v[v.size() / 2];
+    }
     Remote remotes[PORTS];          // the host's: by player, 1 on; a guest's: [0], the host
     std::vector<Whole> wholes;      // on a guest: the whole frames the host sent, by frame
     std::vector<uint8_t> whole_have;
@@ -120,6 +144,7 @@ namespace {
         vsnprintf(line, sizeof(line), format, args);
         va_end(args);
         fputs(line, stderr);
+        log_session_line(line);
         said += strncmp(line, "[netplay] ", 10) == 0 ? line + 10 : line;
     }
 
@@ -128,8 +153,13 @@ namespace {
     // couldn't start (no such host, a port in use). Any but 0 shows the player what the session said first.
     [[noreturn]] void end_session(int code) {
         fflush(stderr);
+        close_session_record();
         if (code != 0 && game.show_message != nullptr) {
-            game.show_message("Online play ended", said.c_str());
+            std::string text = said;
+            if (code == 2 && !session_record_folder().empty()) {
+                text += "\nThis session's record, for whoever is fixing it, is in:\n" + session_record_folder();
+            }
+            game.show_message("Online play ended", text.c_str());
         }
         udp::close();
         std::_Exit(code);
@@ -146,7 +176,7 @@ namespace {
         w.u32(SESSION_MAGIC);
         w.u32(SESSION_VERSION);
         w.u8(kind);
-        w.u8(uint8_t(player));
+        w.u8(player >= 0 ? uint8_t(player) : UNASSIGNED);
     }
 
     void put_hashes(Writer& w) {
@@ -162,7 +192,8 @@ namespace {
     void send_hello(Remote& to) {
         Writer w;
         header(w, KIND_HELLO);
-        w.u8(to.identity_ok ? 1 : 0);
+        // Whether this copy has the other's identity (a guest: and the host's delay), so it may start.
+        w.u8(to.identity_ok && (hosting || delay_known) ? 1 : 0);
         w.u8(uint8_t(players));
         size_t n = std::min(identity.size(), MAX_IDENTITY);
         w.u16(uint16_t(n));
@@ -174,6 +205,13 @@ namespace {
         for (uint8_t b : host_save) {
             w.u8(b);
         }
+        // For the round trip: this copy's clock, the other's last and how long ago it came. And the host's delay once it has chosen it.
+        w.u64(clock_us());
+        w.u64(to.their_clock);
+        w.u32(to.their_clock != 0 ? uint32_t(clock_us() - to.their_clock_at) : 0); // how long this copy held it
+        w.u8(uint8_t(hosting && delay_known ? delay : 0));
+        // The host's to a guest: the player it is.
+        w.u8(uint8_t(hosting ? int(&to - remotes) : 0));
         send(to, w);
     }
 
@@ -391,6 +429,12 @@ namespace {
         }
         uint8_t kind = r.u8();
         int who = r.u8();
+        if (hosting && r.ok && who == UNASSIGNED && kind == KIND_HELLO) {
+            who = slot_for(from_endpoint);
+            if (who < 0) {
+                return false; // the session is full
+            }
+        }
         if (!r.ok || who == player || who >= PORTS || (hosting ? who == 0 || who >= players : who != 0)) {
             return false;
         }
@@ -423,10 +467,24 @@ namespace {
             for (uint16_t i = 0; i < save_size && r.ok; i++) {
                 save.push_back(r.u8());
             }
+            uint64_t their_clock = r.u64();
+            uint64_t echo = r.u64();
+            uint32_t held = r.u32();
+            int their_delay = r.u8();
+            int slot = r.u8();
             if (!r.ok) {
                 return true;
             }
-            if (their_players != players) {
+            if (!hosting && player < 0) {
+                // The host's first hello: this copy's player, and how many play.
+                if (slot < 1 || slot >= PORTS || their_players < 2 || their_players > PORTS) {
+                    return true;
+                }
+                player = slot;
+                players = their_players;
+                say("[netplay] the host has made this copy player %d of %d\n", player + 1, players);
+            }
+            if (their_players != players && their_players != 0) {
                 // The ports with a controller are the session's from power-on, before the handshake: every copy must
                 // start with the same count.
                 say("[netplay] player %d's session is of %d players, this one's of %d\n", who + 1,
@@ -437,8 +495,17 @@ namespace {
                 end_session(4);
             }
             check_identity(from, who, theirs);
+            from.their_clock = their_clock;
+            from.their_clock_at = clock_us();
+            if (echo != 0 && from.rtts_ms.size() < 64 && clock_us() - echo > held) {
+                from.rtts_ms.push_back(double(clock_us() - echo - held) / 1000.0);
+            }
             if (!hosting) {
                 host_save = std::move(save);
+                if (their_delay > 0 && !delay_known) {
+                    delay = their_delay;
+                    delay_known = true;
+                }
             }
             from.saw_ours = from.saw_ours || saw;
             if (handshaken && !saw) {
@@ -448,19 +515,23 @@ namespace {
             if (from.identity_ok) {
                 from.saw_ours = true;
             }
-            take_inputs(r, from, who);
+            if (handshaken) { // its buffers are made once the handshake ends; the guest sends again
+                take_inputs(r, from, who);
+            }
         } else if (kind == KIND_FRAMES && !hosting) {
-            if (from.identity_ok) {
+            if (from.identity_ok && delay_known) {
                 from.saw_ours = true;
             }
-            take_frames(r);
+            if (handshaken) {
+                take_frames(r);
+            }
         }
         return true;
     }
 
     bool everyone_ready() {
         if (!hosting) {
-            return remotes[0].identity_ok && remotes[0].saw_ours;
+            return remotes[0].identity_ok && remotes[0].saw_ours && delay_known;
         }
         for (int p = 1; p < players; p++) {
             if (!remotes[p].identity_ok || !remotes[p].saw_ours) {
@@ -480,9 +551,75 @@ namespace {
         }
     }
 
+    // On the host: the player a guest that hasn't one yet is, by where its packets come from: the one it was already
+    // given, or the first free one.
+    int slot_for(const udp::Endpoint& from) {
+        for (int p = 1; p < players; p++) {
+            if (remotes[p].known && remotes[p].endpoint == from) {
+                return p;
+            }
+        }
+        for (int p = 1; p < players; p++) {
+            if (!remotes[p].known) {
+                return p;
+            }
+        }
+        return -1;
+    }
+
+    // On the host, once every guest has answered a few hellos: the delay, from the longest round trip. A guest's
+    // frame waits for its inputs to reach the host and the whole frame to come back, a round trip, so the delay covers
+    // the round trip and some for its jitter.
+    void choose_delay() {
+        double worst = 0;
+        for (int p = 1; p < players; p++) {
+            if (!remotes[p].identity_ok || remotes[p].rtts_ms.size() < 8) {
+                return;
+            }
+            worst = std::max(worst, median_rtt(remotes[p]));
+        }
+        if (!delay_forced) {
+            delay = std::clamp(int(std::ceil((worst + 35.0) / (1000.0 / 30.0))), 2, 15);
+        }
+        delay_known = true;
+        say("[netplay] round trip %.0f ms: %d frames' delay\n", worst, delay);
+    }
+
+    // How long frames waited for the others, logged every 10 seconds (the session's log, in its record).
+    double waited_ms = 0, longest_wait_ms = 0;
+    int frames_waited = 0;
+    void note_wait(double ms) {
+        if (ms > 1.0) {
+            waited_ms += ms;
+            longest_wait_ms = std::max(longest_wait_ms, ms);
+            frames_waited++;
+        }
+        if (frame_no % 300 == 299) {
+            char line[200];
+            snprintf(line, sizeof(line), "[netplay] frames to %" PRIu64 ": %d waited, %.0f ms in all, the longest %.0f ms\n",
+                    frame_no, frames_waited, waited_ms, longest_wait_ms);
+            log_session_line(line);
+            waited_ms = longest_wait_ms = 0;
+            frames_waited = 0;
+        }
+    }
+
+    // The buffers, once the delay is known: the first frames have no inputs from anyone.
+    void prepare_buffers() {
+        // The ports with a controller, from power-on (the game's entry comes after the handshake): one for each player.
+        connected_mask = (1u << players) - 1;
+        local_inputs.assign(size_t(delay), Inputs{});
+        for (Remote& r : remotes) {
+            r.inputs.assign(size_t(delay), Inputs{});
+            r.have.assign(size_t(delay), 1);
+            r.next = uint32_t(delay);
+        }
+        wholes.assign(size_t(delay), Whole{});
+        whole_have.assign(size_t(delay), 1);
+    }
+
     void handshake() {
         identity = game.identity != nullptr ? game.identity() : std::string();
-        identity += "delay: " + std::to_string(delay) + " frames\n"; // a frame's inputs are its players' from as far back
         if (hosting && game.save != nullptr) {
             host_save = game.save();
             if (host_save.size() > MAX_SAVE) {
@@ -508,12 +645,17 @@ namespace {
                 end_session(3);
             }
             receive_packet(16);
+            if (hosting && !delay_known) {
+                choose_delay();
+            }
         }
         // A last few, so the others know this copy has theirs even if one is lost.
         for (int i = 0; i < 3; i++) {
             hello_everyone();
         }
+        prepare_buffers();
         handshaken = true;
+        open_session_record(player, host_save, said);
         say("[netplay] every copy matches: the session starts with %d players\n", players);
     }
 
@@ -549,28 +691,34 @@ namespace {
     }
 }
 
-bool netplay::detail::open_session(const char* peer, int host_players) {
-    hosting = host_players > 0;
-    if (const char* d = getenv("MP_NETPLAY_DELAY")) delay = std::max(1, atoi(d));
+bool netplay::detail::open_session(const SessionSettings& settings) {
+    hosting = settings.host;
+    if (const char* d = getenv("MP_NETPLAY_DELAY")) {
+        delay = std::clamp(atoi(d), 1, 15); // the host's, for every player; a guest's is ignored
+        delay_forced = true;
+    }
     if (const char* f = getenv("MP_NETPLAY_FRAMES")) session_frames = strtoll(f, nullptr, 10);
     if (const char* t = getenv("MP_NETPLAY_TIMEOUT_MS")) timeout_ms = atoi(t);
     if (const char* d = getenv("MP_NETPLAY_DROP")) drop_percent = atoi(d);
-    const char* port_text = getenv("MP_NETPLAY_PORT");
-    uint16_t port = uint16_t(atoi(port_text != nullptr ? port_text : (hosting ? "7845" : "0")));
+    if (const char* j = getenv("MP_NETPLAY_JITTER_MS")) jitter_ms = atoi(j);
+    uint16_t port = settings.port;
     if (hosting) {
         player = 0;
-        players = std::clamp(host_players, 2, PORTS);
+        players = std::clamp(settings.players, 2, PORTS);
     } else {
-        const char* p = getenv("MP_NETPLAY_PLAYER");
-        const char* n = getenv("MP_NETPLAY_PLAYERS");
-        player = p != nullptr ? atoi(p) : 1;
-        players = n != nullptr ? atoi(n) : 2;
-        if (players < 2 || players > PORTS || player < 1 || player >= players) {
-            say("[netplay] a guest's MP_NETPLAY_PLAYERS is 2 to 4 and its MP_NETPLAY_PLAYER 1 to one less\n");
+        // The host says which player this copy is and how many play, unless the settings already say.
+        player = settings.player > 0 ? settings.player : -1;
+        players = settings.player > 0 ? settings.players : 0;
+        if (player > 0 && (players < 2 || players > PORTS || player >= players)) {
+            say("[netplay] a guest's players are 2 to 4, and its player number 2 to that many\n");
             end_session(5);
         }
+        std::string peer = settings.peer;
+        if (peer.find(':') == std::string::npos) {
+            peer += ":7845";
+        }
         if (!udp::resolve(peer, remotes[0].endpoint)) {
-            say("[netplay] couldn't find the host at %s (an address and port, like 203.0.113.5:7845)\n", peer);
+            say("[netplay] couldn't find the host at %s (an address, like 203.0.113.5 or 203.0.113.5:7845)\n", peer.c_str());
             end_session(5);
         }
         remotes[0].known = true;
@@ -579,21 +727,10 @@ bool netplay::detail::open_session(const char* peer, int host_players) {
         say("[netplay] couldn't open UDP port %u: is another copy of the game using it?\n", unsigned(port));
         end_session(5);
     }
-    local_inputs.assign(size_t(delay), Inputs{});
-    for (Remote& r : remotes) {
-        r.inputs.assign(size_t(delay), Inputs{});
-        r.have.assign(size_t(delay), 1);
-        r.next = uint32_t(delay);
-    }
-    wholes.assign(size_t(delay), Whole{});
-    whole_have.assign(size_t(delay), 1);
-    // The ports with a controller, from power-on: one for each player.
-    connected_mask = (1u << players) - 1;
     if (hosting) {
-        say("[netplay] hosting a session of %d players on UDP port %u, %d frames' delay\n", players,
-                unsigned(port), delay);
+        say("[netplay] hosting a session of %d players on UDP port %u\n", players, unsigned(port));
     } else {
-        say("[netplay] joining the session at %s as player %d, %d frames' delay\n", peer, player + 1, delay);
+        say("[netplay] joining the session at %s\n", settings.peer.c_str());
     }
     return true;
 }
@@ -614,6 +751,10 @@ Frame netplay::detail::session_frame(uint64_t hash) {
         end_session(0);
     }
     local_hashes.push_back(hash);
+    if (jitter_ms > 0 && rand() % 4 == 0) {
+        // A stall, as a busy computer or a late packet makes one, for the tests.
+        std::this_thread::sleep_for(std::chrono::milliseconds(rand() % jitter_ms));
+    }
 
     // This copy's pad for frame + delay.
     Frame taken = take_local_frame();
@@ -627,6 +768,7 @@ Frame netplay::detail::session_frame(uint64_t hash) {
     }
     send_all();
     bool told = false;
+    auto wait_start = Clock::now();
     while (!frame_ready()) {
         if (receive_packet(16)) {
             continue;
@@ -643,6 +785,7 @@ Frame netplay::detail::session_frame(uint64_t hash) {
             end_session(3);
         }
     }
+    note_wait(std::chrono::duration<double, std::milli>(Clock::now() - wait_start).count());
     if (hosting) {
         send_frames(); // the frame is whole: the guests can have it now
     }

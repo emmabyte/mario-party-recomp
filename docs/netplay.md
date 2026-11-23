@@ -59,34 +59,49 @@ or a session.
 ## Playing a session
 
 Two to four players, each on their own computer with the same ROM, the same build, the same mods enabled and the same
-Board Movement and Map Scrolling. One hosts; the others join the host. There is no menu for it yet: the environment
-starts it.
+Board Movement and Map Scrolling. One hosts; the others join the host. The launcher's **Online Play** opens the
+settings' Online tab (`src/netplay/online_tab.cpp`): Online Play Off (the default), Host (with how many play and the
+port) or Join (with the host's address), and the next Start Game starts that session. The environment starts one too,
+for the tests (`src/netplay/core/netplay_core.cpp` lists the variables), and a release carries `dist/netplay`'s
+`host` and `join` scripts (`.bat` on Windows, `.sh` on Linux) that set it, and `ONLINE.txt`, the players' how-to.
 
 ```sh
 # The host, player 1, for three players:
 MP_NETPLAY_HOST=3 ./MarioPartyRecompiled
-# Each other player, by the host's address, as player 2 and player 3:
-MP_NETPLAY_PEER=<host's address>:7845 MP_NETPLAY_PLAYERS=3 MP_NETPLAY_PLAYER=1 ./MarioPartyRecompiled
-MP_NETPLAY_PEER=<host's address>:7845 MP_NETPLAY_PLAYERS=3 MP_NETPLAY_PLAYER=2 ./MarioPartyRecompiled
+# Each other player, by the host's address; the host gives each its player in the order they join:
+MP_NETPLAY_PEER=<host's address> ./MarioPartyRecompiled
 ```
 
-A release carries `dist/netplay`'s launchers beside the program, `host` and `join` (`.bat` on Windows, `.sh` on
-Linux), which ask for these, and `ONLINE.txt`, the players' how-to.
+The handshake runs at the game's entry, before it reads its save (`mp_netplay::start`, from `src/main/main.cpp`):
 
-Each plays with their own first controller. The handshake runs at the game's entry, before it reads its save
-(`mp_netplay::start`, from `src/main/main.cpp`), and the game starts once every copy has joined and the copies match
-(the delay too); a copy that differs says what differs and quits. Every copy plays from the host's save: the host's
-hello carries it, and a guest writes it to `saves/netplay` and plays from there, its own save untouched. A session that
-ends for a reason (copies that differ, a player gone, a desync, a host not found) shows it in a window before the
-program closes, as stderr reaches no one from the Windows build (`MP_NETPLAY_NO_MESSAGES` leaves the window out, for
-the tests). Only the host's UDP port (7845, or `MP_NETPLAY_PORT`) must be reachable from
-the others: over the internet, that means forwarding it on the host's router. Every frame waits for every player's
-inputs, three frames after they were pressed (`MP_NETPLAY_DELAY`); a longer distance needs a longer delay. If two
-copies ever differ, both stop and name the frame.
+- Each guest's hello reaches the host, which gives it its player and says how many play.
+- The copies compare what makes them play alike (the identity: ROM, build, mods, options); a copy that differs says
+  what differs and quits.
+- The hellos carry clocks, and the host chooses the delay from the longest round trip it measures: a guest's frame
+  waits for its inputs to reach the host and the whole frame to come back, so the delay covers a round trip and some
+  for its jitter (`MP_NETPLAY_DELAY` on the host sets it instead).
+- Every copy plays from the host's save: the host's hello carries it, and a guest writes it to `saves/netplay` and
+  plays from there, its own save untouched.
+
+Each plays with their own first controller. Only the host's UDP port (7845 by default) must be reachable from the
+others: over the internet, a shared VPN or the port forwarded on the host's router.
+
+Each copy keeps a record of its session in `netplay/sessions/<time>-p<player>/`, beside the saves folder (the last
+ten): `inputs.mpnp` and its `.hash`, a recording `MP_NETPLAY_REPLAY` plays with `host.save` as the save, and
+`session.log`, what the session said, with how long frames waited for the others every 10 seconds. If two copies ever
+differ, both stop and name the frame; replaying each copy's record on one computer shows which went its own way, and
+the chunks of RDRAM its hashes differ in. A session that ends for a reason (copies that differ, a player gone, a
+desync, a host not found) shows it in a window before the program closes, as stderr reaches no one from the Windows
+build (`MP_NETPLAY_NO_MESSAGES` leaves the window out, for the tests).
+
+Online, the game makes its sound as its frames come, which a stall for a late player holds up and the frames after it
+make up at once. So during a session the sound keeps a cushion of 120 ms, played back to within half a percent faster
+or slower to stay there, and after a stall long enough to empty it, it waits until the cushion is full again rather
+than crackling (`src/main/main.cpp`'s queue_samples).
 
 `tools/netplay_session_test.sh` plays a session of copies on one computer (`NETPLAY_TEST_PLAYERS`, with packets dropped
-at `MP_NETPLAY_DROP` percent to test a lossy link, and `NETPLAY_TEST_GUEST_SAVE` a save the guests start with that the
-host's replaces).
+at `MP_NETPLAY_DROP` percent to test a lossy link, stalls of up to `MP_NETPLAY_JITTER_MS` before one frame in four,
+and `NETPLAY_TEST_GUEST_SAVE` a save the guests start with that the host's replaces).
 
 ## The determinism test
 

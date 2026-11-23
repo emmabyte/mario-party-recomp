@@ -349,7 +349,14 @@ static void use_host_save(const std::vector<uint8_t>& save) {
 }
 
 void mp_netplay::start() {
+    if (netplay::mode() == netplay::Mode::Off) {
+        mp_netplay::start_from_settings();
+    }
     netplay::start();
+}
+
+bool mp_netplay::active() {
+    return netplay::mode() == netplay::Mode::Session;
 }
 
 void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const std::string& version) {
@@ -359,6 +366,11 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
     game.samples_per_frame = SAMPLES;
     game.state_ranges = state_ranges;
     game.identity = identity;
+    game.data_folder = []() {
+        // Beside the saves folder (the program's own folder in portable mode): netplay/.
+        static std::string folder = (ultramodern::get_save_file_path().parent_path().parent_path() / "netplay").string();
+        return folder;
+    };
     game.save = host_save;
     game.use_save = use_host_save;
     // A window that waits for the player, but for the tests, where no one would close it (MP_NETPLAY_NO_MESSAGES).

@@ -10,8 +10,9 @@
 // - MP_NETPLAY_DUMP_FRAME=<n>[,<n>...]: writes RDRAM at each frame n to <file>.frame<n>.rdram, to diff two runs.
 // - MP_NETPLAY_HOST=<players, 2 to 4>: hosts a session (session.cpp's header says how it goes) on UDP port
 //   MP_NETPLAY_PORT (7845 by default), playing port 1.
-// - MP_NETPLAY_PEER=<host>:<port>: joins the session hosted there as MP_NETPLAY_PLAYER (1 to 3: port 2 to 4) of
-//   MP_NETPLAY_PLAYERS (2 by default), from MP_NETPLAY_PORT (any by default).
+// - MP_NETPLAY_PEER=<host>[:<port>]: joins the session hosted there, as the player the host gives it, or as
+//   MP_NETPLAY_PLAYER (1 to 3: port 2 to 4) of MP_NETPLAY_PLAYERS when both are set, from MP_NETPLAY_PORT (any by
+//   default). Without these, the game's Online settings say (src/netplay/mario_party.cpp, set_session).
 // - For either: MP_NETPLAY_DELAY (frames of input delay, 3 by default), MP_NETPLAY_FRAMES (ends the session after
 //   that many frames, for tests), MP_NETPLAY_TIMEOUT_MS (how long a frame waits for a silent player, 15000) and
 //   MP_NETPLAY_DROP (a share of packets to drop, in percent, to test a lossy link).
@@ -21,11 +22,14 @@
 #include "netplay_core.h"
 #include "netplay_internal.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
+#include <filesystem>
 #include <mutex>
 
 // The runtime's conversion of a stick's position to the N64's range (N64ModernRuntime's ultramodern/src/input.cpp).
@@ -53,6 +57,10 @@ namespace {
     bool keep_going = false;
     std::vector<int64_t> dump_frames;
     int64_t record_frames = -1;
+
+    // A session's record (netplay_internal.h).
+    FILE* session_log = nullptr;
+    std::string record_folder;
 
     std::vector<Frame> replay_frames;
     std::vector<FrameHash> replay_hashes;
@@ -330,10 +338,22 @@ void netplay::init(const Game& g, const ultramodern::input::callbacks_t& callbac
     if (const char* limit = getenv("MP_NETPLAY_RECORD_FRAMES")) {
         record_frames = strtoll(limit, nullptr, 10);
     }
+    const char* port = getenv("MP_NETPLAY_PORT");
     if (const char* host = getenv("MP_NETPLAY_HOST")) {
-        current_mode = open_session(nullptr, atoi(host)) ? Mode::Session : Mode::Off;
+        SessionSettings s;
+        s.host = true;
+        s.players = atoi(host);
+        s.port = uint16_t(port != nullptr ? atoi(port) : 7845);
+        current_mode = open_session(s) ? Mode::Session : Mode::Off;
     } else if (const char* peer = getenv("MP_NETPLAY_PEER")) {
-        current_mode = open_session(peer, 0) ? Mode::Session : Mode::Off;
+        SessionSettings s;
+        s.peer = peer;
+        const char* n = getenv("MP_NETPLAY_PLAYERS");
+        const char* p = getenv("MP_NETPLAY_PLAYER");
+        s.players = n != nullptr ? atoi(n) : 2;
+        s.player = p != nullptr ? atoi(p) : 0;
+        s.port = uint16_t(port != nullptr ? atoi(port) : 0);
+        current_mode = open_session(s) ? Mode::Session : Mode::Off;
     } else if (replay != nullptr) {
         path = replay;
         current_mode = open_replay() ? Mode::Replay : Mode::Off;
@@ -344,6 +364,74 @@ void netplay::init(const Game& g, const ultramodern::input::callbacks_t& callbac
             fprintf(stderr, "[netplay] recording to %s\n", path.c_str());
         }
     }
+}
+
+void netplay::detail::open_session_record(int player, const std::vector<uint8_t>& host_save, const std::string& said) {
+    if (game.data_folder == nullptr || !path.empty()) {
+        return;
+    }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path sessions = fs::path(game.data_folder()) / "sessions";
+    fs::create_directories(sessions, ec);
+    // Only the last few sessions are kept: a long one's hashes take tens of MB.
+    std::vector<fs::path> old;
+    for (const auto& entry : fs::directory_iterator(sessions, ec)) {
+        if (entry.is_directory()) {
+            old.push_back(entry.path());
+        }
+    }
+    std::sort(old.begin(), old.end());
+    for (size_t i = 0; i + 9 < old.size(); i++) {
+        fs::remove_all(old[i], ec);
+    }
+    char stamp[32];
+    std::time_t now = std::time(nullptr);
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", std::localtime(&now));
+    fs::path folder = sessions / (std::string(stamp) + "-p" + std::to_string(player + 1));
+    fs::create_directories(folder, ec);
+    record_folder = folder.string();
+    path = (folder / "inputs.mpnp").string();
+    if (!open_record()) {
+        input_file = hash_file = nullptr;
+    }
+    if (FILE* f = fopen((folder / "host.save").string().c_str(), "wb")) {
+        fwrite(host_save.data(), 1, host_save.size(), f);
+        fclose(f);
+    }
+    session_log = fopen((folder / "session.log").string().c_str(), "w");
+    if (session_log != nullptr) {
+        fputs(said.c_str(), session_log);
+        fflush(session_log);
+    }
+}
+
+void netplay::detail::log_session_line(const char* line) {
+    if (session_log != nullptr) {
+        fputs(line, session_log);
+        fflush(session_log);
+    }
+}
+
+void netplay::detail::close_session_record() {
+    for (FILE** f : { &input_file, &hash_file, &session_log }) {
+        if (*f != nullptr) {
+            fclose(*f);
+            *f = nullptr;
+        }
+    }
+}
+
+const std::string& netplay::detail::session_record_folder() {
+    return record_folder;
+}
+
+bool netplay::set_session(const SessionSettings& settings) {
+    if (detail::current_mode != Mode::Off) {
+        return false;
+    }
+    detail::current_mode = open_session(settings) ? Mode::Session : Mode::Off;
+    return detail::current_mode == Mode::Session;
 }
 
 void netplay::start() {
@@ -405,6 +493,14 @@ Frame netplay::advance(uint8_t* rdram) {
         }
     } else if (detail::current_mode == Mode::Session) {
         fr = session_frame(h.total);
+        if (input_file != nullptr) {
+            write_frame(input_file, fr);
+            write_hash(hash_file, h);
+            if (frame_no % 60 == 0) {
+                fflush(input_file);
+                fflush(hash_file);
+            }
+        }
     } else if (detail::current_mode == Mode::Replay) {
         if (frame_no < replay_hashes.size() && replay_hashes[frame_no].total != h.total) {
             report_mismatch(replay_hashes[frame_no], h);

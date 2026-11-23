@@ -63,7 +63,7 @@
 #include "window_icon_bmp.h"
 #endif
 
-const std::string version_string = "0.2.14-netplay-alpha.1";
+const std::string version_string = "0.2.14-netplay-alpha.2";
 
 template<typename... Ts>
 void exit_error(const char* str, Ts ...args) {
@@ -242,6 +242,46 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
     uint64_t cur_queued_microseconds = get_queued_audio_bytes() / (output_channels * sizeof(float)) * 1000000 / output_sample_rate;
     uint32_t num_bytes_to_queue = audio_convert.len_cvt - output_channels * discarded_output_frames * sizeof(swap_buffer[0]);
     float* samples_to_queue = swap_buffer.data() + output_channels * discarded_output_frames / 2;
+
+#ifndef __EMSCRIPTEN__
+    // Online, the game makes its sound as its frames come, which a stall for a late player holds up and the frames
+    // after it make up at once. So the sound keeps a cushion of 120 ms, played back to within half a percent faster or
+    // slower to stay there (no one hears the pitch move), and after a stall long enough to empty it, it waits until it
+    // is full again rather than playing it in crackles: a gap once, not over and over.
+    if (mp_netplay::active()) {
+        constexpr double target_ms = 120.0;
+        static bool refilling = true;
+        static std::vector<float> stretched;
+        double queued_ms = cur_queued_microseconds / 1000.0;
+        if (queued_ms > 4 * target_ms) {
+            return; // far behind (a long stall's frames made up): this buffer would only add delay
+        }
+        if (queued_ms < 10.0 && !refilling) {
+            refilling = true;
+            SDL_PauseAudioDevice(audio_device, 1);
+        }
+        size_t in_frames = num_bytes_to_queue / (output_channels * sizeof(float));
+        double ratio = 1.0 + std::clamp((queued_ms - target_ms) / target_ms, -1.0, 1.0) * 0.005;
+        size_t out_frames = size_t(double(in_frames) / ratio);
+        stretched.resize(out_frames * output_channels);
+        for (size_t i = 0; i < out_frames; i++) {
+            double at = double(i) * double(in_frames - 1) / double(std::max<size_t>(out_frames - 1, 1));
+            size_t a = size_t(at);
+            size_t b = std::min(a + 1, in_frames - 1);
+            float t = float(at - double(a));
+            for (uint32_t c = 0; c < output_channels; c++) {
+                stretched[i * output_channels + c] = samples_to_queue[a * output_channels + c] * (1.0f - t) +
+                    samples_to_queue[b * output_channels + c] * t;
+            }
+        }
+        queue_audio(stretched.data(), uint32_t(stretched.size() * sizeof(float)));
+        if (refilling && get_queued_audio_bytes() / (output_channels * sizeof(float)) * 1000 / output_sample_rate >= target_ms) {
+            refilling = false;
+            SDL_PauseAudioDevice(audio_device, 0);
+        }
+        return;
+    }
+#endif
 
     // With more than 100 ms queued (the window was dragged, a slow boot), drop samples to catch up, whole frames only:
     // SDL's queue is a byte stream, so a part of one would put every sample queued after it out of step, read as noise.
@@ -431,7 +471,22 @@ void on_launcher_update(recompui::LauncherMenu*) {
 void on_launcher_init(recompui::LauncherMenu* menu) {
     const recomp::GameEntry& game = supported_games[0];
     auto game_options_menu = menu->init_game_options_menu(game.game_id, game.mod_game_id, game.display_name, game.thumbnail_bytes);
-    game_options_menu->add_default_options();
+    // RecompFrontend's options, with Online Play after Start Game: the settings' Online tab, where the next game is
+    // set to host or join a session (src/netplay/online_tab.cpp).
+    game_options_menu->add_start_game_or_load_rom_option();
+    if (mp_netplay::available()) {
+        game_options_menu->add_option("Online Play", [mod_game_id = game.mod_game_id]() {
+            recompui::update_game_mod_id(mod_game_id);
+            recompui::hide_all_contexts();
+            mp_netplay::open_settings_tab();
+        });
+    }
+    game_options_menu->add_setup_controls_option();
+    game_options_menu->add_settings_option();
+#ifndef __EMSCRIPTEN__
+    game_options_menu->add_mods_option();
+    game_options_menu->add_exit_option();
+#endif
 }
 
 void enable_texture_pack(recomp::mods::ModContext& context, const recomp::mods::ModHandle& mod) {

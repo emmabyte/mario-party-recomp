@@ -66,6 +66,9 @@ namespace netplay {
         // Optional, for a game with no save.
         std::vector<uint8_t> (*save)() = nullptr;
         void (*use_save)(const std::vector<uint8_t>& host_save) = nullptr;
+        // Where a session keeps its record (its inputs, hashes, the host's save and its log), for a desync to be
+        // replayed and traced later: a folder of the player's. Optional.
+        std::string (*data_folder)() = nullptr;
     };
 
     enum class Mode { Off, Record, Replay, Session };
@@ -82,6 +85,20 @@ namespace netplay {
     // At each VI, on the game's controller thread, in place of its own pad read: takes a sample of this computer's
     // pads for the next frame. Returns whether netplay drives the pads (the game skips its own read if so).
     bool sample_pads();
+
+    // An online session to start (start): host, for so many players, or join the host at peer ("host" or
+    // "host:port", 7845 if none), as the player the host gives this copy unless player (1 to 3) says. port: the UDP
+    // port to listen on, the host's 7845 by default, any for a guest.
+    struct SessionSettings {
+        bool host = false;
+        int players = 2;
+        std::string peer;
+        int player = 0;
+        uint16_t port = 0;
+    };
+    // Sets the session start() starts, unless the environment set one (netplay_core.cpp). Returns false if another
+    // mode runs.
+    bool set_session(const SessionSettings& settings);
 
     // Before the game starts (before it reads its save): a session's handshake, which waits for every player, and the
     // host's save for a guest (Game's use_save). Does nothing but in a session. Without it, the handshake comes at the

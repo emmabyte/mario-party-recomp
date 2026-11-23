@@ -28,9 +28,16 @@ namespace netplay::detail {
     Frame take_local_frame();
 
     // session.cpp
-    // peer: the host's address, for a guest; host_players: the players, for the host, else 0. A session that can't
-    // start (no such host, a port in use) ends the program, saying why.
-    bool open_session(const char* peer, int host_players);
+    // A session that can't start (no such host, a port in use) ends the program, saying why.
+    bool open_session(const SessionSettings& settings);
     Frame session_frame(uint64_t hash);
     void start_session();
+
+    // netplay_core.cpp: a session's record, in Game's data_folder: sessions/<time>-p<player>/ with inputs.mpnp and its
+    // .hash (a recording MP_NETPLAY_REPLAY plays, with host.save as the save), and session.log, the session's lines.
+    void open_session_record(int player, const std::vector<uint8_t>& host_save, const std::string& said);
+    void log_session_line(const char* line);
+    void close_session_record();
+    // The folder of the record, empty without one.
+    const std::string& session_record_folder();
 }

@@ -90,7 +90,7 @@ run player1 MP_NETPLAY_HOST="$players" MP_NETPLAY_PORT=7845
 p1=$!
 pids=("$p1")
 for n in $(seq 2 "$players"); do
-    run "player$n" MP_NETPLAY_PEER=127.0.0.1:7845 MP_NETPLAY_PLAYERS="$players" MP_NETPLAY_PLAYER=$((n - 1))
+    run "player$n" MP_NETPLAY_PEER=127.0.0.1  # the host gives each its player
     pids+=("$!")
 done
 p2="${pids[1]}"

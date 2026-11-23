@@ -250,6 +250,7 @@ if (MP_NETPLAY)
         ${CMAKE_SOURCE_DIR}/src/netplay/core/session.cpp
         ${CMAKE_SOURCE_DIR}/src/netplay/core/udp.cpp
         ${CMAKE_SOURCE_DIR}/src/netplay/mario_party.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/online_tab.cpp
     )
     # The build's commit, for the session's handshake: two copies of different commits may play differently.
     execute_process(COMMAND git rev-parse --short=12 HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

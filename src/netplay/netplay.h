@@ -13,6 +13,17 @@ namespace mp_netplay {
 
     // At the game's entry, before it reads its save: a session's handshake, and the host's save for a guest.
     void start();
+
+    // online_tab.cpp: the Online tab in the settings (before recompui::config::finalize), the launcher's way to it,
+    // and the session it says to start, if any (start does this).
+    void add_settings_tab();
+    // Whether netplay is built in (the MP_NETPLAY CMake option): the launcher shows Online Play only then.
+    bool available();
+    void open_settings_tab();
+    bool start_from_settings();
+
+    // Whether an online session is running: the sound keeps a cushion then (src/main/main.cpp).
+    bool active();
 }
 
 namespace netplay {
