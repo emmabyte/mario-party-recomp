@@ -56,6 +56,29 @@ or a session.
   alive, below where each sleeps being what was left there (`mario_party.cpp`'s `excluded` and `state_ranges`).
 - During a replay the ports with a controller are the recording's (`get_connected_device_info`, `src/main/main.cpp`).
 
+## Playing a session
+
+Two to four players, each on their own computer with the same ROM, the same build, the same mods enabled and the same
+Board Movement and Map Scrolling. One hosts; the others join the host. There is no menu for it yet: the environment
+starts it.
+
+```sh
+# The host, player 1, for three players:
+MP_NETPLAY_HOST=3 ./MarioPartyRecompiled
+# Each other player, by the host's address, as player 2 and player 3:
+MP_NETPLAY_PEER=<host's address>:7845 MP_NETPLAY_PLAYERS=3 MP_NETPLAY_PLAYER=1 ./MarioPartyRecompiled
+MP_NETPLAY_PEER=<host's address>:7845 MP_NETPLAY_PLAYERS=3 MP_NETPLAY_PLAYER=2 ./MarioPartyRecompiled
+```
+
+Each plays with their own first controller. The game starts once every copy has joined and the copies match; a copy
+that differs says what differs and quits. Only the host's UDP port (7845, or `MP_NETPLAY_PORT`) must be reachable from
+the others: over the internet, that means forwarding it on the host's router. Every frame waits for every player's
+inputs, three frames after they were pressed (`MP_NETPLAY_DELAY`); a longer distance needs a longer delay. If two
+copies ever differ, both stop and name the frame.
+
+`tools/netplay_session_test.sh` plays a session of copies on one computer (`NETPLAY_TEST_PLAYERS`, with packets dropped
+at `MP_NETPLAY_DROP` percent to test a lossy link).
+
 ## The determinism test
 
 On Linux, with the program built (README) and Xvfb, xdotool and a Vulkan driver:

@@ -28,6 +28,7 @@ namespace netplay::detail {
     Frame take_local_frame();
 
     // session.cpp
-    bool open_session(const char* peer);
+    // peer: the host's address, for a guest; host_players: the players, for the host, else 0.
+    bool open_session(const char* peer, int host_players);
     Frame session_frame(uint64_t hash);
 }

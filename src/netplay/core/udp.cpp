@@ -7,12 +7,14 @@
 
 #if defined(__EMSCRIPTEN__)
 
-bool netplay::udp::open(uint16_t, const std::string&) {
+std::string netplay::udp::Endpoint::text() const { return ""; }
+bool netplay::udp::open(uint16_t) {
     fprintf(stderr, "[netplay] the web build has no UDP\n");
     return false;
 }
-void netplay::udp::send(const void*, size_t) {}
-size_t netplay::udp::receive(void*, size_t, int) { return 0; }
+bool netplay::udp::resolve(const std::string&, Endpoint&) { return false; }
+void netplay::udp::send(const Endpoint&, const void*, size_t) {}
+size_t netplay::udp::receive(void*, size_t, int, Endpoint&) { return 0; }
 void netplay::udp::close() {}
 
 #else
@@ -37,33 +39,58 @@ static void close_socket(socket_t s) { ::close(s); }
 
 namespace {
     socket_t sock = NO_SOCKET;
-    sockaddr_in peer_addr{};
+    bool started = false;
+
+    bool start() {
+#if defined(_WIN32)
+        if (!started) {
+            WSADATA wsa;
+            if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+                fprintf(stderr, "[netplay] Winsock didn't start\n");
+                return false;
+            }
+        }
+#endif
+        started = true;
+        return true;
+    }
 }
 
-bool netplay::udp::open(uint16_t local_port, const std::string& peer) {
-#if defined(_WIN32)
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        fprintf(stderr, "[netplay] Winsock didn't start\n");
+std::string netplay::udp::Endpoint::text() const {
+    uint32_t a = ntohl(addr);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%u.%u.%u.%u:%u", a >> 24, (a >> 16) & 0xFF, (a >> 8) & 0xFF, a & 0xFF, unsigned(ntohs(port)));
+    return buf;
+}
+
+bool netplay::udp::resolve(const std::string& host_port, Endpoint& out) {
+    if (!start()) {
         return false;
     }
-#endif
-    size_t colon = peer.rfind(':');
+    size_t colon = host_port.rfind(':');
     if (colon == std::string::npos) {
-        fprintf(stderr, "[netplay] the peer %s has no :port\n", peer.c_str());
+        fprintf(stderr, "[netplay] %s has no :port\n", host_port.c_str());
         return false;
     }
-    std::string host = peer.substr(0, colon), port = peer.substr(colon + 1);
+    std::string host = host_port.substr(0, colon), port = host_port.substr(colon + 1);
     addrinfo hints{}, *found = nullptr;
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_DGRAM;
     if (getaddrinfo(host.c_str(), port.c_str(), &hints, &found) != 0 || found == nullptr) {
-        fprintf(stderr, "[netplay] can't resolve the peer %s\n", peer.c_str());
+        fprintf(stderr, "[netplay] can't resolve %s\n", host_port.c_str());
         return false;
     }
-    memcpy(&peer_addr, found->ai_addr, sizeof(peer_addr));
+    const sockaddr_in* in = reinterpret_cast<const sockaddr_in*>(found->ai_addr);
+    out.addr = in->sin_addr.s_addr;
+    out.port = in->sin_port;
     freeaddrinfo(found);
+    return true;
+}
 
+bool netplay::udp::open(uint16_t local_port) {
+    if (!start()) {
+        return false;
+    }
     sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == NO_SOCKET) {
         fprintf(stderr, "[netplay] can't make a UDP socket\n");
@@ -82,14 +109,18 @@ bool netplay::udp::open(uint16_t local_port, const std::string& peer) {
     return true;
 }
 
-void netplay::udp::send(const void* data, size_t size) {
-    if (sock != NO_SOCKET) {
-        sendto(sock, static_cast<const char*>(data), int(size), 0, reinterpret_cast<const sockaddr*>(&peer_addr),
-               sizeof(peer_addr));
+void netplay::udp::send(const Endpoint& to, const void* data, size_t size) {
+    if (sock == NO_SOCKET) {
+        return;
     }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = to.addr;
+    addr.sin_port = to.port;
+    sendto(sock, static_cast<const char*>(data), int(size), 0, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
 }
 
-size_t netplay::udp::receive(void* data, size_t size, int timeout_ms) {
+size_t netplay::udp::receive(void* data, size_t size, int timeout_ms, Endpoint& from) {
     if (sock == NO_SOCKET) {
         return 0;
     }
@@ -100,12 +131,14 @@ size_t netplay::udp::receive(void* data, size_t size, int timeout_ms) {
     if (select(int(sock + 1), &set, nullptr, nullptr, &tv) <= 0) {
         return 0;
     }
-    sockaddr_in from{};
-    socklen_t from_size = sizeof(from);
-    int got = recvfrom(sock, static_cast<char*>(data), int(size), 0, reinterpret_cast<sockaddr*>(&from), &from_size);
-    if (got <= 0 || from.sin_addr.s_addr != peer_addr.sin_addr.s_addr || from.sin_port != peer_addr.sin_port) {
+    sockaddr_in addr{};
+    socklen_t addr_size = sizeof(addr);
+    int got = recvfrom(sock, static_cast<char*>(data), int(size), 0, reinterpret_cast<sockaddr*>(&addr), &addr_size);
+    if (got <= 0) {
         return 0;
     }
+    from.addr = addr.sin_addr.s_addr;
+    from.port = addr.sin_port;
     return size_t(got);
 }
 

@@ -8,10 +8,12 @@
 //   first frame that differs (with MP_NETPLAY_CONTINUE=1, it goes on and counts them), prints which 64 KB chunks of
 //   RDRAM differ, and at the recording's end prints the result and exits, 0 when every frame matched.
 // - MP_NETPLAY_DUMP_FRAME=<n>[,<n>...]: writes RDRAM at each frame n to <file>.frame<n>.rdram, to diff two runs.
-// - MP_NETPLAY_PEER=<host>:<port>: a session with the copy at that address (session.cpp's header says how it goes),
-//   with MP_NETPLAY_PORT (this computer's UDP port, 7845 by default), MP_NETPLAY_PLAYER (0 or 1: the port this
-//   computer plays), MP_NETPLAY_DELAY (frames of input delay, 3 by default), MP_NETPLAY_FRAMES (ends the session
-//   after that many frames, for tests), MP_NETPLAY_TIMEOUT_MS (how long a frame waits for a silent peer, 15000) and
+// - MP_NETPLAY_HOST=<players, 2 to 4>: hosts a session (session.cpp's header says how it goes) on UDP port
+//   MP_NETPLAY_PORT (7845 by default), playing port 1.
+// - MP_NETPLAY_PEER=<host>:<port>: joins the session hosted there as MP_NETPLAY_PLAYER (1 to 3: port 2 to 4) of
+//   MP_NETPLAY_PLAYERS (2 by default), from MP_NETPLAY_PORT (any by default).
+// - For either: MP_NETPLAY_DELAY (frames of input delay, 3 by default), MP_NETPLAY_FRAMES (ends the session after
+//   that many frames, for tests), MP_NETPLAY_TIMEOUT_MS (how long a frame waits for a silent player, 15000) and
 //   MP_NETPLAY_DROP (a share of packets to drop, in percent, to test a lossy link).
 
 #include "netplay_core.h"
@@ -326,8 +328,10 @@ void netplay::init(const Game& g, const ultramodern::input::callbacks_t& callbac
     if (const char* limit = getenv("MP_NETPLAY_RECORD_FRAMES")) {
         record_frames = strtoll(limit, nullptr, 10);
     }
-    if (const char* peer = getenv("MP_NETPLAY_PEER")) {
-        current_mode = open_session(peer) ? Mode::Session : Mode::Off;
+    if (const char* host = getenv("MP_NETPLAY_HOST")) {
+        current_mode = open_session(nullptr, atoi(host)) ? Mode::Session : Mode::Off;
+    } else if (const char* peer = getenv("MP_NETPLAY_PEER")) {
+        current_mode = open_session(peer, 0) ? Mode::Session : Mode::Off;
     } else if (replay != nullptr) {
         path = replay;
         current_mode = open_replay() ? Mode::Replay : Mode::Off;

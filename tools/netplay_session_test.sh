@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Netplay's session test (src/netplay, docs/netplay.md): two copies of the Linux build on one computer,
-# each a player of one session over UDP on localhost, which compare their hashes of RDRAM as they play. Player 1 is
-# played by keys sent to its window, as tools/netplay_replay_test.sh plays its recording, and player 2 by no one. Each
+# Netplay's session test (src/netplay, docs/netplay.md): copies of the Linux build on one computer, each a player of
+# one session over UDP on localhost (player 1 hosts), which compare their hashes of RDRAM as they play. Player 1 is
+# played by keys sent to its window, as tools/netplay_replay_test.sh plays its recording, and the others by no one. Each
 # copy ends after the frames given and prints how many hashes it compared; a frame whose hashes differ ends both and
 # names it.
 #
 # Usage: tools/netplay_session_test.sh <build dir> <ROM> <out dir> [frames, default 5400 (3 minutes)]
 #
-# MP_NETPLAY_DELAY (default 3) and MP_NETPLAY_DROP (a share of packets each copy drops, in percent; default 0) are
+# NETPLAY_TEST_PLAYERS is how many play (2 to 4, default 2). MP_NETPLAY_DELAY (default 3) and MP_NETPLAY_DROP (a share of packets each copy drops, in percent; default 0) are
 # passed on; MP_NETPLAY_MINIGAMES as in the replay test.
 set -euo pipefail
 
@@ -79,20 +79,26 @@ run() {
         "$build/MarioPartyRecompiled" --boot --window 640x480) > "$out/$name.log" 2>&1 < /dev/null &
 }
 
-echo "a session of $frames frames"
-run player1 MP_NETPLAY_PLAYER=0 MP_NETPLAY_PORT=7845 MP_NETPLAY_PEER=127.0.0.1:7846
+players="${NETPLAY_TEST_PLAYERS:-2}"
+echo "a session of $players players, $frames frames"
+run player1 MP_NETPLAY_HOST="$players" MP_NETPLAY_PORT=7845
 p1=$!
-run player2 MP_NETPLAY_PLAYER=1 MP_NETPLAY_PORT=7846 MP_NETPLAY_PEER=127.0.0.1:7845
-p2=$!
+pids=("$p1")
+for n in $(seq 2 "$players"); do
+    run "player$n" MP_NETPLAY_PEER=127.0.0.1:7845 MP_NETPLAY_PLAYERS="$players" MP_NETPLAY_PLAYER=$((n - 1))
+    pids+=("$!")
+done
+p2="${pids[1]}"
 sleep 3
 drive "$p1" &
 driver=$!
 status=0
-wait "$p1" || status=1
-wait "$p2" || status=1
+for pid in "${pids[@]}"; do
+    wait "$pid" || status=1
+done
 kill $driver 2>/dev/null || true
-for name in player1 player2; do
-    echo "$name:"
-    grep '\[netplay\]' "$out/$name.log" | grep -v ': overlay\|asking for' || true
+for n in $(seq 1 "$players"); do
+    echo "player$n:"
+    grep '\[netplay\]' "$out/player$n.log" | grep -v ': overlay\|asking for' || true
 done
 exit $status

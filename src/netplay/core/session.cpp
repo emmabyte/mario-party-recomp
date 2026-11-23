@@ -1,17 +1,23 @@
-// A session between two copies of the game (MP_NETPLAY_PEER): delay-based lockstep over UDP. Each copy plays one port
-// (MP_NETPLAY_PLAYER, 0 or 1) with its own first pad, and each frame's inputs are both players': this copy's pad as it
-// sampled it MP_NETPLAY_DELAY frames earlier, and the peer's for the same frame, which the frame waits for. So both
-// run the same frames on the same inputs, and each game turns them into the same state (a recording's replay tests
-// that it does). The first DELAY frames have no inputs from anyone.
+// A session between copies of the game: delay-based lockstep over UDP for two to four players, through a host. The
+// host (MP_NETPLAY_HOST=<players>) plays port 1 and listens on MP_NETPLAY_PORT; each guest (MP_NETPLAY_PEER=<host's
+// address>:<port>, MP_NETPLAY_PLAYERS=<players>, MP_NETPLAY_PLAYER=<its port, 1 to 3>) plays its port with its own first pad and sends only to the
+// host. A frame's inputs are every player's pad as each copy sampled it MP_NETPLAY_DELAY frames earlier: each guest
+// sends the host its own, the host puts each frame together once it has every player's, and sends the whole frame to
+// every guest. So every copy runs the same frames on the same inputs, and each game turns them into the same state (a
+// recording's replay tests that it does). Only the host needs a port others can reach. The first DELAY frames have no
+// inputs from anyone.
 //
-// It starts with a handshake, at the first frame: each copy sends the game's identity (netplay_core.h's Game) until it
-// has the peer's and knows the peer has its own. Identities that differ end the session on both copies, naming the
-// lines that differ: a different ROM, build, mod or option would play differently from the same inputs.
+// It starts with a handshake, at the first frame: each guest sends the host the game's identity (netplay_core.h's
+// Game) until the host has it and has answered with its own. The session starts once the host has every guest's.
+// Identities that differ end the session, naming the lines that differ: a different ROM, build, mod or option would
+// play differently from the same inputs.
 //
-// Then the packets, both ways, each frame and again every 16 ms while a frame waits: this copy's inputs from the first
-// frame the peer hasn't acknowledged, up to 32 frames of them, its acknowledgement of the peer's (the first frame it
-// still needs), and the hashes of the game state it has made for its last frames, which the peer compares with its
-// own. A frame whose hashes differ ends the session on both and names the frame: from there the games differ.
+// Then the packets, each frame and again every 16 ms while a frame waits. A guest's to the host: its inputs from the
+// first frame the host hasn't acknowledged, the first whole frame it still needs, and the hashes of the game state it
+// made for its last frames. The host's to each guest: the whole frames from the first that guest still needs, the
+// first of that guest's inputs it still needs, and its own last hashes. The host compares every guest's hashes with
+// its own, and each guest the host's: a frame whose hashes differ ends the session and names the frame, since from
+// there the games differ.
 
 #include "netplay_internal.h"
 #include "udp.h"
@@ -27,19 +33,23 @@
 
 using namespace netplay;
 using namespace netplay::detail;
+using Clock = std::chrono::steady_clock;
 
 namespace {
     constexpr uint32_t SESSION_MAGIC = 0x534E504D; // "MPNS"
-    constexpr uint32_t SESSION_VERSION = 2;
+    constexpr uint32_t SESSION_VERSION = 3;
     constexpr uint8_t KIND_HELLO = 0;
-    constexpr uint8_t KIND_FRAMES = 1;
-    constexpr int PLAYERS = 2;
-    constexpr int MAX_SEND = 32;
+    constexpr uint8_t KIND_INPUTS = 1; // a guest's to the host
+    constexpr uint8_t KIND_FRAMES = 2; // the host's to a guest
+    constexpr int MAX_SEND = 24;
     constexpr int HASHES_SENT = 4;
     constexpr size_t MAX_IDENTITY = 1200;
     using Inputs = std::array<Pad, MAX_SAMPLES>;
+    using Whole = std::array<Inputs, PORTS>; // a frame's inputs, every player's
 
+    bool hosting = false;
     int player = 0;
+    int players = 2;
     int delay = 3;
     int64_t session_frames = -1;
     int timeout_ms = 15000;
@@ -47,18 +57,29 @@ namespace {
 
     std::string identity;
     bool handshaken = false;
-    bool peer_identity_seen = false; // the peer's identity came, and matched
-    bool peer_saw_ours = false;      // the peer says it has this copy's
 
-    std::vector<Inputs> local_inputs;   // by frame_no
-    std::vector<Inputs> remote_inputs;  // by frame_no
-    std::vector<uint8_t> remote_have;   // by frame_no
-    uint32_t remote_next = 0;           // the first frame_no of the peer's this copy still needs
-    uint32_t peer_ack = 0;              // the first frame_no of this copy's the peer still needs
-    std::vector<uint64_t> local_hashes; // by frame_no
-    std::deque<std::pair<uint32_t, uint64_t>> remote_hashes; // the peer's, not yet compared
+    std::vector<Inputs> local_inputs;   // by frame
+    std::vector<uint64_t> local_hashes; // by frame
     uint64_t hashes_compared = 0;
-    uint32_t compare_from = 0;          // the first frame_no whose hash is yet to be compared
+
+    // The host as a guest sees it, or a guest as the host does.
+    struct Remote {
+        udp::Endpoint endpoint{};
+        bool known = false;        // its address is known (the host's from the start; a guest's from its hello)
+        bool identity_ok = false;  // its identity came, and matched
+        bool saw_ours = false;     // it has this copy's identity
+        uint32_t ack = 0;          // the first frame of this copy's it still needs
+        // A guest's inputs, as the host keeps them, by frame.
+        std::vector<Inputs> inputs;
+        std::vector<uint8_t> have;
+        uint32_t next = 0;         // the first frame of its inputs (on a guest: of whole frames) still missing
+        std::deque<std::pair<uint32_t, uint64_t>> hashes; // its hashes, not yet compared
+        uint32_t compare_from = 0;
+        Clock::time_point heard = Clock::now();
+    };
+    Remote remotes[PORTS];          // the host's: by player, 1 on; a guest's: [0], the host
+    std::vector<Whole> wholes;      // on a guest: the whole frames the host sent, by frame
+    std::vector<uint8_t> whole_have;
 
     struct Writer {
         uint8_t buf[1400];
@@ -67,6 +88,7 @@ namespace {
         void u16(uint16_t v) { u8(uint8_t(v)); u8(uint8_t(v >> 8)); }
         void u32(uint32_t v) { for (int i = 0; i < 4; i++) u8(uint8_t(v >> (8 * i))); }
         void u64(uint64_t v) { u32(uint32_t(v)); u32(uint32_t(v >> 32)); }
+        void pad(const Pad& p) { u16(p.button); u8(uint8_t(p.stick_x)); u8(uint8_t(p.stick_y)); u8(p.err_no); }
     };
     struct Reader {
         const uint8_t* buf;
@@ -76,16 +98,8 @@ namespace {
         uint16_t u16() { uint16_t lo = u8(); return uint16_t(lo | (u8() << 8)); }
         uint32_t u32() { uint32_t v = 0; for (int i = 0; i < 4; i++) v |= uint32_t(u8()) << (8 * i); return v; }
         uint64_t u64() { uint64_t lo = u32(); return lo | (uint64_t(u32()) << 32); }
+        Pad pad() { Pad p; p.button = u16(); p.stick_x = int8_t(u8()); p.stick_y = int8_t(u8()); p.err_no = u8(); return p; }
     };
-
-    void put_pad(Writer& w, const Pad& p) {
-        w.u16(p.button); w.u8(uint8_t(p.stick_x)); w.u8(uint8_t(p.stick_y)); w.u8(p.err_no);
-    }
-    Pad get_pad(Reader& r) {
-        Pad p;
-        p.button = r.u16(); p.stick_x = int8_t(r.u8()); p.stick_y = int8_t(r.u8()); p.err_no = r.u8();
-        return p;
-    }
 
     [[noreturn]] void end_session(int code) {
         fflush(stderr);
@@ -93,11 +107,11 @@ namespace {
         std::_Exit(code);
     }
 
-    void send(const Writer& w) {
-        if (drop_percent > 0 && rand() % 100 < drop_percent) {
+    void send(const Remote& to, const Writer& w) {
+        if (!to.known || (drop_percent > 0 && rand() % 100 < drop_percent)) {
             return;
         }
-        udp::send(w.buf, w.n);
+        udp::send(to.endpoint, w.buf, w.n);
     }
 
     void header(Writer& w, uint8_t kind) {
@@ -107,40 +121,93 @@ namespace {
         w.u8(uint8_t(player));
     }
 
-    void send_hello() {
+    void put_hashes(Writer& w) {
+        uint32_t count = std::min<uint32_t>(uint32_t(local_hashes.size()), HASHES_SENT);
+        w.u8(uint8_t(count));
+        for (uint32_t i = 0; i < count; i++) {
+            uint32_t f = uint32_t(local_hashes.size()) - count + i;
+            w.u32(f);
+            w.u64(local_hashes[f]);
+        }
+    }
+
+    void send_hello(Remote& to) {
         Writer w;
         header(w, KIND_HELLO);
-        w.u8(peer_identity_seen ? 1 : 0);
+        w.u8(to.identity_ok ? 1 : 0);
+        w.u8(uint8_t(players));
         size_t n = std::min(identity.size(), MAX_IDENTITY);
         w.u16(uint16_t(n));
         for (size_t i = 0; i < n; i++) {
             w.u8(uint8_t(identity[i]));
         }
-        send(w);
+        send(to, w);
     }
 
-    void send_frames() {
+    // The first frame some player's input is still missing for: on the host, how far the whole frames go.
+    uint32_t wholes_ready() {
+        uint32_t ready = uint32_t(local_inputs.size());
+        for (int p = 1; p < players; p++) {
+            ready = std::min(ready, remotes[p].next);
+        }
+        return ready;
+    }
+
+    Inputs input_of(int p, uint32_t f) {
+        return p == 0 ? local_inputs[f] : remotes[p].inputs[f];
+    }
+
+    // A guest's to the host.
+    void send_inputs() {
+        Remote& host = remotes[0];
         Writer w;
-        header(w, KIND_FRAMES);
-        w.u32(remote_next);
-        uint32_t first = std::max<uint32_t>(peer_ack, uint32_t(delay));
+        header(w, KIND_INPUTS);
+        w.u32(host.next);
+        uint32_t first = std::max<uint32_t>(host.ack, uint32_t(delay));
         uint32_t end = uint32_t(local_inputs.size());
         uint32_t count = end > first ? std::min<uint32_t>(end - first, MAX_SEND) : 0;
         w.u32(first);
         w.u8(uint8_t(count));
         for (uint32_t f = first; f < first + count; f++) {
             for (int i = 0; i < game.samples_per_frame; i++) {
-                put_pad(w, local_inputs[f][i]);
+                w.pad(local_inputs[f][i]);
             }
         }
-        uint32_t hashes = std::min<uint32_t>(uint32_t(local_hashes.size()), HASHES_SENT);
-        w.u8(uint8_t(hashes));
-        for (uint32_t i = 0; i < hashes; i++) {
-            uint32_t f = uint32_t(local_hashes.size()) - hashes + i;
-            w.u32(f);
-            w.u64(local_hashes[f]);
+        put_hashes(w);
+        send(host, w);
+    }
+
+    // The host's to each guest.
+    void send_frames() {
+        uint32_t ready = wholes_ready();
+        for (int p = 1; p < players; p++) {
+            Remote& guest = remotes[p];
+            Writer w;
+            header(w, KIND_FRAMES);
+            w.u32(guest.next);
+            uint32_t first = std::max<uint32_t>(guest.ack, uint32_t(delay));
+            uint32_t count = ready > first ? std::min<uint32_t>(ready - first, MAX_SEND) : 0;
+            w.u32(first);
+            w.u8(uint8_t(count));
+            for (uint32_t f = first; f < first + count; f++) {
+                for (int q = 0; q < players; q++) {
+                    Inputs in = input_of(q, f);
+                    for (int i = 0; i < game.samples_per_frame; i++) {
+                        w.pad(in[i]);
+                    }
+                }
+            }
+            put_hashes(w);
+            send(guest, w);
         }
-        send(w);
+    }
+
+    void send_all() {
+        if (hosting) {
+            send_frames();
+        } else {
+            send_inputs();
+        }
     }
 
     // "name: value" lines by name.
@@ -159,90 +226,129 @@ namespace {
         return out;
     }
 
-    void check_identity(const std::string& theirs) {
+    void check_identity(Remote& from, int who, const std::string& theirs) {
         std::string ours = identity.substr(0, MAX_IDENTITY);
         if (theirs == ours) {
-            peer_identity_seen = true;
+            from.identity_ok = true;
             return;
         }
-        fprintf(stderr, "[netplay] the peer's copy differs from this one, so the two would play differently:\n");
+        fprintf(stderr, "[netplay] player %d's copy differs from this one, so the two would play differently:\n", who + 1);
         auto a = lines(ours), b = lines(theirs);
         for (auto& [name, value] : a) {
             auto it = b.find(name);
             if (it == b.end()) {
-                fprintf(stderr, "[netplay]   %s: here%s, the peer has none\n", name.c_str(), value.c_str());
+                fprintf(stderr, "[netplay]   %s: here%s, theirs none\n", name.c_str(), value.c_str());
             } else if (it->second != value) {
-                fprintf(stderr, "[netplay]   %s: here%s, the peer's%s\n", name.c_str(), value.c_str(), it->second.c_str());
+                fprintf(stderr, "[netplay]   %s: here%s, theirs%s\n", name.c_str(), value.c_str(), it->second.c_str());
             }
         }
         for (auto& [name, value] : b) {
             if (a.find(name) == a.end()) {
-                fprintf(stderr, "[netplay]   %s: none here, the peer's%s\n", name.c_str(), value.c_str());
+                fprintf(stderr, "[netplay]   %s: none here, theirs%s\n", name.c_str(), value.c_str());
             }
         }
         for (int i = 0; i < 10; i++) {
-            send_hello(); // so the peer can say what differs too
+            send_hello(from); // so the other copy can say what differs too
         }
         end_session(4);
     }
 
-    void compare_hashes() {
-        while (!remote_hashes.empty() && remote_hashes.front().first < local_hashes.size()) {
-            auto [f, h] = remote_hashes.front();
-            remote_hashes.pop_front();
+    void compare_hashes(Remote& from, int who) {
+        while (!from.hashes.empty() && from.hashes.front().first < local_hashes.size()) {
+            auto [f, h] = from.hashes.front();
+            from.hashes.pop_front();
             if (local_hashes[f] != h) {
-                fprintf(stderr, "[netplay] frame %u differs from the peer's: the session has desynced\n", f);
+                fprintf(stderr, "[netplay] frame %u differs from player %d's: the session has desynced\n", f, who + 1);
                 for (int i = 0; i < 20; i++) {
-                    send_frames(); // so the peer sees this copy's hash for the frame_no too
+                    send_all(); // so the others see this copy's hash for the frame too
                 }
                 end_session(2);
             }
             hashes_compared++;
-            compare_from = f + 1;
+            from.compare_from = f + 1;
         }
     }
 
-    void take_frames(Reader& r) {
+    void take_hashes(Reader& r, Remote& from, int who) {
+        uint32_t count = r.u8();
+        for (uint32_t i = 0; i < count && r.ok; i++) {
+            uint32_t f = r.u32();
+            uint64_t h = r.u64();
+            if (r.ok && (from.hashes.empty() || f > from.hashes.back().first) && f >= from.compare_from) {
+                from.hashes.emplace_back(f, h);
+            }
+        }
+        compare_hashes(from, who);
+    }
+
+    // On the host, a guest's inputs.
+    void take_inputs(Reader& r, Remote& guest, int who) {
         uint32_t ack = r.u32();
         uint32_t first = r.u32();
         uint32_t count = r.u8();
         if (!r.ok) {
             return;
         }
-        peer_ack = std::max(peer_ack, ack);
+        guest.ack = std::max(guest.ack, ack);
         for (uint32_t f = first; f < first + count; f++) {
             Inputs in{};
             for (int i = 0; i < game.samples_per_frame; i++) {
-                in[i] = get_pad(r);
+                in[i] = r.pad();
             }
             if (!r.ok) {
                 return;
             }
-            if (remote_inputs.size() <= f) {
-                remote_inputs.resize(f + 1);
-                remote_have.resize(f + 1, 0);
+            if (guest.inputs.size() <= f) {
+                guest.inputs.resize(f + 1);
+                guest.have.resize(f + 1, 0);
             }
-            remote_inputs[f] = in;
-            remote_have[f] = 1;
+            guest.inputs[f] = in;
+            guest.have[f] = 1;
         }
-        while (remote_next < remote_have.size() && remote_have[remote_next]) {
-            remote_next++;
+        while (guest.next < guest.have.size() && guest.have[guest.next]) {
+            guest.next++;
         }
-        uint32_t hashes = r.u8();
-        for (uint32_t i = 0; i < hashes && r.ok; i++) {
-            uint32_t f = r.u32();
-            uint64_t h = r.u64();
-            if (r.ok && (remote_hashes.empty() || f > remote_hashes.back().first) && f >= compare_from) {
-                remote_hashes.emplace_back(f, h);
-            }
-        }
-        compare_hashes();
+        take_hashes(r, guest, who);
     }
 
-    // Takes in one packet from the peer, if one came within wait_ms. Returns whether one did.
+    // On a guest, the host's whole frames.
+    void take_frames(Reader& r) {
+        Remote& host = remotes[0];
+        uint32_t ack = r.u32();
+        uint32_t first = r.u32();
+        uint32_t count = r.u8();
+        if (!r.ok) {
+            return;
+        }
+        host.ack = std::max(host.ack, ack);
+        for (uint32_t f = first; f < first + count; f++) {
+            Whole whole{};
+            for (int q = 0; q < players; q++) {
+                for (int i = 0; i < game.samples_per_frame; i++) {
+                    whole[q][i] = r.pad();
+                }
+            }
+            if (!r.ok) {
+                return;
+            }
+            if (wholes.size() <= f) {
+                wholes.resize(f + 1);
+                whole_have.resize(f + 1, 0);
+            }
+            wholes[f] = whole;
+            whole_have[f] = 1;
+        }
+        while (host.next < whole_have.size() && whole_have[host.next]) {
+            host.next++;
+        }
+        take_hashes(r, host, 0);
+    }
+
+    // Takes in one packet, if one came within wait_ms. Returns whether one did.
     bool receive_packet(int wait_ms) {
         uint8_t buf[1500];
-        size_t n = udp::receive(buf, sizeof(buf), wait_ms);
+        udp::Endpoint from_endpoint;
+        size_t n = udp::receive(buf, sizeof(buf), wait_ms, from_endpoint);
         if (n == 0) {
             return false;
         }
@@ -251,81 +357,193 @@ namespace {
             return false;
         }
         uint8_t kind = r.u8();
-        int from = r.u8();
-        if (!r.ok || from == player || from >= PLAYERS) {
+        int who = r.u8();
+        if (!r.ok || who == player || who >= PORTS || (hosting ? who == 0 || who >= players : who != 0)) {
             return false;
         }
+        Remote& from = remotes[hosting ? who : 0];
+        if (hosting) {
+            // A guest's address is where its packets come from: what its router shows the host.
+            if (kind == KIND_HELLO) {
+                if (!from.known) {
+                    fprintf(stderr, "[netplay] player %d is at %s\n", who + 1, from_endpoint.text().c_str());
+                }
+                from.endpoint = from_endpoint;
+                from.known = true;
+            } else if (!from.known || from.endpoint != from_endpoint) {
+                return false;
+            }
+        } else if (from_endpoint != from.endpoint) {
+            return false;
+        }
+        from.heard = Clock::now();
         if (kind == KIND_HELLO) {
             bool saw = r.u8() != 0;
+            int their_players = r.u8();
             uint16_t size = r.u16();
             std::string theirs;
             for (uint16_t i = 0; i < size && r.ok; i++) {
                 theirs.push_back(char(r.u8()));
             }
-            if (r.ok) {
-                check_identity(theirs);
-                peer_saw_ours = peer_saw_ours || saw;
-                if (handshaken && !saw) {
-                    send_hello(); // the peer is still waiting for this copy's identity
-                }
+            if (!r.ok) {
+                return true;
             }
-        } else if (kind == KIND_FRAMES) {
-            // The peer has gone on to its frames, so it has this copy's identity, and has matched it.
-            if (peer_identity_seen) {
-                peer_saw_ours = true;
+            if (their_players != players) {
+                // The ports with a controller are the session's from power-on, before the handshake: every copy must
+                // start with the same count.
+                fprintf(stderr, "[netplay] player %d's session is of %d players, this one's of %d\n", who + 1,
+                        their_players, players);
+                for (int i = 0; i < 10; i++) {
+                    send_hello(from);
+                }
+                end_session(4);
+            }
+            check_identity(from, who, theirs);
+            from.saw_ours = from.saw_ours || saw;
+            if (handshaken && !saw) {
+                send_hello(from); // it is still waiting for this copy's identity
+            }
+        } else if (kind == KIND_INPUTS && hosting) {
+            if (from.identity_ok) {
+                from.saw_ours = true;
+            }
+            take_inputs(r, from, who);
+        } else if (kind == KIND_FRAMES && !hosting) {
+            if (from.identity_ok) {
+                from.saw_ours = true;
             }
             take_frames(r);
         }
         return true;
     }
 
+    bool everyone_ready() {
+        if (!hosting) {
+            return remotes[0].identity_ok && remotes[0].saw_ours;
+        }
+        for (int p = 1; p < players; p++) {
+            if (!remotes[p].identity_ok || !remotes[p].saw_ours) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void hello_everyone() {
+        if (hosting) {
+            for (int p = 1; p < players; p++) {
+                send_hello(remotes[p]);
+            }
+        } else {
+            send_hello(remotes[0]);
+        }
+    }
+
     void handshake() {
         identity = game.identity != nullptr ? game.identity() : std::string();
-        fprintf(stderr, "[netplay] waiting for the peer\n");
-        auto until = std::chrono::steady_clock::now() + std::chrono::minutes(2);
-        auto next_hello = std::chrono::steady_clock::now();
-        while (!(peer_identity_seen && peer_saw_ours)) {
-            auto now = std::chrono::steady_clock::now();
+        if (hosting) {
+            fprintf(stderr, "[netplay] waiting for %d players to join\n", players - 1);
+        } else {
+            fprintf(stderr, "[netplay] waiting for the host\n");
+        }
+        auto until = Clock::now() + std::chrono::minutes(5);
+        auto next_hello = Clock::now();
+        while (!everyone_ready()) {
+            auto now = Clock::now();
             if (now >= next_hello) {
-                send_hello();
+                hello_everyone();
                 next_hello = now + std::chrono::milliseconds(50);
             }
             if (now > until) {
-                fprintf(stderr, "[netplay] the peer never answered\n");
+                fprintf(stderr, hosting ? "[netplay] not every player joined\n" : "[netplay] the host never answered\n");
                 end_session(3);
             }
             receive_packet(16);
         }
-        // A last few, so the peer knows this copy has its identity even if one is lost.
+        // A last few, so the others know this copy has theirs even if one is lost.
         for (int i = 0; i < 3; i++) {
-            send_hello();
+            hello_everyone();
         }
         handshaken = true;
-        fprintf(stderr, "[netplay] the peer's copy matches this one: the session starts\n");
+        fprintf(stderr, "[netplay] every copy matches: the session starts with %d players\n", players);
+    }
+
+    // Whether the frame's inputs from everyone are here.
+    bool frame_ready() {
+        return hosting ? wholes_ready() > frame_no : remotes[0].next > frame_no;
+    }
+
+    // Whether every other copy has all it needs of this one's to play the session's frames.
+    bool others_have_all() {
+        uint32_t end = uint32_t(session_frames);
+        if (!hosting) {
+            return remotes[0].ack >= end;
+        }
+        for (int p = 1; p < players; p++) {
+            if (remotes[p].ack < end) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // The copy that has been silent longest, while a frame waits.
+    const Remote& quietest(int& who) {
+        int first = hosting ? 1 : 0, last = hosting ? players : 1;
+        who = first;
+        for (int p = first; p < last; p++) {
+            if (remotes[p].heard < remotes[who].heard) {
+                who = p;
+            }
+        }
+        return remotes[who];
     }
 }
 
-bool netplay::detail::open_session(const char* peer) {
-    if (const char* p = getenv("MP_NETPLAY_PLAYER")) player = atoi(p);
+bool netplay::detail::open_session(const char* peer, int host_players) {
+    hosting = host_players > 0;
     if (const char* d = getenv("MP_NETPLAY_DELAY")) delay = std::max(1, atoi(d));
     if (const char* f = getenv("MP_NETPLAY_FRAMES")) session_frames = strtoll(f, nullptr, 10);
     if (const char* t = getenv("MP_NETPLAY_TIMEOUT_MS")) timeout_ms = atoi(t);
     if (const char* d = getenv("MP_NETPLAY_DROP")) drop_percent = atoi(d);
     const char* port_text = getenv("MP_NETPLAY_PORT");
-    uint16_t port = uint16_t(atoi(port_text != nullptr ? port_text : "7845"));
-    if (player < 0 || player >= PLAYERS) {
-        fprintf(stderr, "[netplay] MP_NETPLAY_PLAYER is 0 or 1\n");
-        return false;
+    uint16_t port = uint16_t(atoi(port_text != nullptr ? port_text : (hosting ? "7845" : "0")));
+    if (hosting) {
+        player = 0;
+        players = std::clamp(host_players, 2, PORTS);
+    } else {
+        const char* p = getenv("MP_NETPLAY_PLAYER");
+        const char* n = getenv("MP_NETPLAY_PLAYERS");
+        player = p != nullptr ? atoi(p) : 1;
+        players = n != nullptr ? atoi(n) : 2;
+        if (players < 2 || players > PORTS || player < 1 || player >= players) {
+            fprintf(stderr, "[netplay] a guest's MP_NETPLAY_PLAYERS is 2 to 4 and its MP_NETPLAY_PLAYER 1 to one less\n");
+            return false;
+        }
+        if (!udp::resolve(peer, remotes[0].endpoint)) {
+            return false;
+        }
+        remotes[0].known = true;
     }
-    if (!udp::open(port, peer)) {
+    if (!udp::open(port)) {
         return false;
     }
     local_inputs.assign(size_t(delay), Inputs{});
-    remote_inputs.assign(size_t(delay), Inputs{});
-    remote_have.assign(size_t(delay), 1);
-    remote_next = uint32_t(delay);
-    connected_mask = (1u << PLAYERS) - 1;
-    fprintf(stderr, "[netplay] session with %s as player %d, %d frames' delay\n", peer, player + 1, delay);
+    for (Remote& r : remotes) {
+        r.inputs.assign(size_t(delay), Inputs{});
+        r.have.assign(size_t(delay), 1);
+        r.next = uint32_t(delay);
+    }
+    wholes.assign(size_t(delay), Whole{});
+    whole_have.assign(size_t(delay), 1);
+    // The ports with a controller, from power-on: one for each player.
+    connected_mask = (1u << players) - 1;
+    if (hosting) {
+        fprintf(stderr, "[netplay] hosting a session of %d players on UDP port %u, %d frames' delay\n", players,
+                unsigned(port), delay);
+    } else {
+        fprintf(stderr, "[netplay] joining the session at %s as player %d, %d frames' delay\n", peer, player + 1, delay);
+    }
     return true;
 }
 
@@ -334,13 +552,13 @@ Frame netplay::detail::session_frame(uint64_t hash) {
         handshake();
     }
     if (session_frames >= 0 && int64_t(frame_no) >= session_frames) {
-        // Stay until the peer has this copy's inputs for every frame it plays, then end.
-        auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-        while (peer_ack < uint32_t(session_frames) && std::chrono::steady_clock::now() < until) {
-            send_frames();
+        // Stay until the others have this copy's part of every frame they play, then end.
+        auto until = Clock::now() + std::chrono::seconds(3);
+        while (!others_have_all() && Clock::now() < until) {
+            send_all();
             receive_packet(16);
         }
-        fprintf(stderr, "[netplay] played %" PRIu64 " frames with the peer: %" PRIu64 " hashes compared, every one matched\n",
+        fprintf(stderr, "[netplay] played %" PRIu64 " frames: %" PRIu64 " hashes compared, every one matched\n",
                 frame_no, hashes_compared);
         end_session(0);
     }
@@ -354,33 +572,37 @@ Frame netplay::detail::session_frame(uint64_t hash) {
     }
     local_inputs.push_back(mine);
 
-    send_frames();
     while (receive_packet(0)) {
     }
-    auto last_heard = std::chrono::steady_clock::now();
+    send_all();
     bool told = false;
-    while (remote_next <= frame_no) {
+    while (!frame_ready()) {
         if (receive_packet(16)) {
-            last_heard = std::chrono::steady_clock::now();
             continue;
         }
-        send_frames();
-        auto quiet = std::chrono::steady_clock::now() - last_heard;
-        if (!told && quiet > std::chrono::seconds(1)) {
-            fprintf(stderr, "[netplay] frame %" PRIu64 ": waiting for the peer\n", frame_no);
+        send_all();
+        int who = 0;
+        auto silent = Clock::now() - quietest(who).heard;
+        if (!told && silent > std::chrono::seconds(1)) {
+            fprintf(stderr, "[netplay] frame %" PRIu64 ": waiting for player %d\n", frame_no, who + 1);
             told = true;
         }
-        if (quiet > std::chrono::milliseconds(timeout_ms)) {
-            fprintf(stderr, "[netplay] frame %" PRIu64 ": the peer stopped answering\n", frame_no);
+        if (silent > std::chrono::milliseconds(timeout_ms)) {
+            fprintf(stderr, "[netplay] frame %" PRIu64 ": player %d stopped answering\n", frame_no, who + 1);
             end_session(3);
         }
+    }
+    if (hosting) {
+        send_frames(); // the frame is whole: the guests can have it now
     }
 
     Frame fr;
     fr.connected = uint8_t(connected_mask);
-    for (int i = 0; i < game.samples_per_frame; i++) {
-        fr.samples[i][player] = local_inputs[frame_no][i];
-        fr.samples[i][1 - player] = remote_inputs[frame_no][i];
+    for (int q = 0; q < players; q++) {
+        Inputs in = hosting ? input_of(q, uint32_t(frame_no)) : wholes[frame_no][q];
+        for (int i = 0; i < game.samples_per_frame; i++) {
+            fr.samples[i][q] = in[i];
+        }
     }
     return fr;
 }
