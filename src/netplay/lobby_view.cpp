@@ -7,6 +7,7 @@
 // Its layout follows RecompFrontend's prompt (recompui/src/composites/ui_prompt.cpp): a panel over the launcher, a
 // title, the players, a line of status, and the buttons.
 
+#include <cctype>
 #include <functional>
 #include <string>
 
