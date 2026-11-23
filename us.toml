@@ -77,12 +77,28 @@ text = "{ void mp_hud_reset(uint8_t*); mp_hud_reset(rdram); }"
 [[patches.hook]]
 func = "func_80068410"
 before_vram = 0x80068410
-text = "{ void mp_hud_sprite_width(uint8_t*, float); void mp_hud_sprite_start(uint8_t*, gpr, gpr); gpr s = ctx->r5; gpr data = (gpr)(int32_t)MEM_W(0x4C, s); if (data != 0) { gpr frame = (gpr)(int32_t)MEM_W(0x0, data) + MEM_H(0x52, s) * 12; union { uint32_t u; float f; } scale; scale.u = (uint32_t)MEM_W(0x14, s); mp_hud_sprite_width(rdram, MEM_HU(0x4, frame) * scale.f); } mp_hud_sprite_start(rdram, ctx->r4, ctx->r5); }"
+text = "{ void mp_hud_sprite_width(uint8_t*, float); void mp_hud_sprite_start(uint8_t*, gpr, gpr); gpr s = ctx->r5; gpr data = (gpr)(int32_t)MEM_W(0x4C, s); if (data != 0) { gpr frame = (gpr)(int32_t)MEM_W(0x0, data) + MEM_H(0x52, s) * 12; union { uint32_t u; float f; } scale; scale.u = (uint32_t)MEM_W(0x14, s); mp_hud_sprite_width(rdram, MEM_HU(0x4, frame) * scale.f); } mp_hud_sprite_start(rdram, ctx->r4, ctx->r5); void mp_hud_sprite_reach(uint8_t*, gpr, gpr, int32_t); union { uint32_t u; float f; } turn; turn.u = (uint32_t)MEM_W(0x1C, s); uint32_t attr = (uint32_t)MEM_W(0x20, s); mp_hud_sprite_reach(rdram, ctx->r4, s + 4, (turn.f == 0.0f) && ((attr & 0xC0000) == 0) && ((attr & 0x30000) != 0x30000)); }"
+
+[[patches.hook]]
+func = "func_80068410"
+before_vram = 0x80068870
+text = "{ float mp_hud_sprite_left(uint8_t*); float mp_hud_sprite_right(uint8_t*); union { uint32_t u; float f; } right, left; right.u = (uint32_t)ctx->r18; left.u = (uint32_t)ctx->r19; right.f -= mp_hud_sprite_left(rdram); left.f -= mp_hud_sprite_right(rdram) - 320.0f; ctx->r18 = (int32_t)right.u; ctx->r19 = (int32_t)left.u; }"
 
 [[patches.hook]]
 func = "func_80068410"
 before_vram = 0x80069358
 text = "{ void mp_hud_sprite_end(uint8_t*, gpr); mp_hud_sprite_end(rdram, ctx->r21); }"
+
+# The game's big messages' letters out to the window's edges (lib/mario-party-engine/src/hud.cpp says how): the group
+# its message module makes for a message's letters (GMesFontCreate, 0x800767B4, has the group's index in v0 once it
+# stores it at 0x80076860), and in each sprite drawn, its x (an s16 at 0x4) and whether func_80068410 draws it as
+# texture rectangles (no turn, the float at 0x1C, and none of its flags at 0x20 for a matrix: 0xC0000, or both of
+# 0x30000), and where it drops a sprite wholly off the screen: the right of its corners in s2 and their left in s3,
+# floats, before it tests them against 0 and 320 (from 0x80068870).
+[[patches.hook]]
+func = "GMesFontCreate"
+before_vram = 0x80076864
+text = "{ void mp_hud_message_group(uint8_t*, gpr, int32_t); mp_hud_message_group(rdram, (gpr)(int32_t)MEM_W((int16_t)ctx->r2 * 4, (gpr)(int32_t)0x800EE330), 0xC); }"
 
 # A screen wipe past 4:3 (lib/mario-party-engine/src/wipe.cpp says how): the wipe module's whole-screen rectangle
 # (func_800728F4(gfx, alpha), out through 0x800729C0), and a shape wipe (func_8007420C, with gfx in t0): its draws
