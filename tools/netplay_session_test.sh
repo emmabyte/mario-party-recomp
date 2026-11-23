@@ -9,7 +9,8 @@
 #
 # NETPLAY_TEST_PLAYERS is how many play (2 to 4, default 2). MP_NETPLAY_DELAY (default 3) and MP_NETPLAY_DROP (a share of packets each copy drops, in percent; default 0) are
 # passed on; MP_NETPLAY_MINIGAMES as in the replay test. NETPLAY_TEST_GUEST_SAVE names a save the other players start
-# with, where player 1 starts with none: each guest plays from the host's save, so the session matches all the same.
+# with, where player 1 starts with none. NETPLAY_TEST_GUEST_ENV adds variables to the guests' (MP_NETPLAY_TEST_POKE to
+# make a desync, for one): each guest plays from the host's save, so the session matches all the same.
 set -euo pipefail
 
 build="$(realpath "$1")"
@@ -90,7 +91,8 @@ run player1 MP_NETPLAY_HOST="$players" MP_NETPLAY_PORT=7845
 p1=$!
 pids=("$p1")
 for n in $(seq 2 "$players"); do
-    run "player$n" MP_NETPLAY_PEER=127.0.0.1  # the host gives each its player
+    # shellcheck disable=SC2086 # NETPLAY_TEST_GUEST_ENV is a list of variables
+    run "player$n" MP_NETPLAY_PEER=127.0.0.1 ${NETPLAY_TEST_GUEST_ENV:-}  # the host gives each its player
     pids+=("$!")
 done
 p2="${pids[1]}"

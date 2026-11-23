@@ -374,8 +374,9 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
     game.state_ranges = state_ranges;
     game.identity = identity;
     game.data_folder = []() {
-        // Beside the saves folder (the program's own folder in portable mode): netplay/.
-        static std::string folder = (save_file_path().parent_path().parent_path() / "netplay").string();
+        // Beside the saves folder, in the config folder (the program's own folder in portable mode): netplay/. Not
+        // from the save's path, which a guest's session moves into saves/netplay.
+        static std::string folder = (recomp::get_config_path() / "netplay").string();
         return folder;
     };
     game.save = host_save;

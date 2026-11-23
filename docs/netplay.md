@@ -92,8 +92,11 @@ others: over the internet, a shared VPN or the port forwarded on the host's rout
 Each copy keeps a record of its session in `netplay/sessions/<time>-p<player>/`, beside the saves folder (the last
 ten): `inputs.mpnp` and its `.hash`, a recording `MP_NETPLAY_REPLAY` plays with `host.save` as the save, and
 `session.log`, what the session said, with how long frames waited for the others every 10 seconds. If two copies ever
-differ, both stop and name the frame; replaying each copy's record on one computer shows which went its own way, and
-the chunks of RDRAM its hashes differ in. A session that ends for a reason (copies that differ, a player gone, a
+differ, both name the frame and swap its hashes of each 4 KB page of RDRAM, so each `session.log` names the pages that
+differ; both then play on to the same frame, 60 after it, write RDRAM there to `desync-frame<n>.rdram` in the record,
+and stop. `tools/netplay_rdram_diff.py` names what differs between the two copies' files by symbol, and replaying each
+copy's record on one computer shows which went its own way. `MP_NETPLAY_TEST_POKE=<frame>:<address>` changes a word of
+RDRAM at that frame, a desync to test this with (`NETPLAY_TEST_GUEST_ENV` passes it to the session test's guests). A session that ends for a reason (copies that differ, a player gone, a
 desync, a host not found) shows it in a window before the program closes, as stderr reaches no one from the Windows
 build (`MP_NETPLAY_NO_MESSAGES` leaves the window out, for the tests).
 

@@ -29,7 +29,8 @@
 // made for its last frames. The host's to each guest: the whole frames from the first that guest still needs, the
 // first of that guest's inputs it still needs, and its own last hashes. The host compares every guest's hashes with
 // its own, and each guest the host's: a frame whose hashes differ ends the session and names the frame, since from
-// there the games differ.
+// there the games differ: the two copies swap that frame's hashes of each 4 KB page (KIND_DESYNC), play on to the same
+// frame and write RDRAM there to the session's record, so the record says where the games went apart.
 
 #include "netplay_internal.h"
 #include "udp.h"
@@ -60,6 +61,8 @@ namespace {
     constexpr uint8_t KIND_INPUTS = 1; // a guest's to the host
     constexpr uint8_t KIND_FRAMES = 2; // the host's to a guest
     constexpr uint8_t KIND_BYE = 3;    // a copy leaving the lobby
+    constexpr uint8_t KIND_DESYNC = 4; // a desynced frame's page hashes, to name what differs
+    constexpr uint32_t PAGES_SENT = 160; // page hashes a desync packet carries
     constexpr int MAX_SEND = 24;
     constexpr int HASHES_SENT = 4;
     constexpr size_t MAX_IDENTITY = 800;
@@ -136,6 +139,7 @@ namespace {
     std::string peer_text;
 
     int slot_for(const udp::Endpoint& from);
+    bool receive_packet(int wait_ms);
     void drop_guest(int p);
 
     uint64_t clock_us() {
@@ -403,16 +407,125 @@ namespace {
         end_session(4);
     }
 
+    // A desync: which 4 KB pages of RDRAM differ, from the page hashes the two copies swap (KIND_DESYNC), so the
+    // session's log names where the games went apart, and RDRAM as it is now, to diff with the other copy's.
+    bool desyncing = false;
+    uint32_t desync_frame = 0;
+    std::vector<uint64_t> their_pages;
+    std::vector<uint8_t> their_have;
+
+    void send_pages(const Remote& to, uint32_t f) {
+        const uint64_t* pages = page_hashes(f);
+        if (pages == nullptr) {
+            return;
+        }
+        for (uint32_t first = 0; first < PAGES; first += PAGES_SENT) {
+            Writer w;
+            header(w, KIND_DESYNC);
+            w.u32(f);
+            w.u16(uint16_t(first));
+            uint32_t count = std::min<uint32_t>(PAGES_SENT, uint32_t(PAGES) - first);
+            w.u16(uint16_t(count));
+            for (uint32_t i = 0; i < count; i++) {
+                w.u64(pages[first + i]);
+            }
+            send(to, w);
+        }
+    }
+
+    void take_pages(Reader& r) {
+        uint32_t f = r.u32();
+        uint32_t first = r.u16();
+        uint32_t count = r.u16();
+        if (!r.ok || f != desync_frame || first + count > PAGES) {
+            return;
+        }
+        for (uint32_t i = 0; i < count; i++) {
+            uint64_t h = r.u64();
+            if (!r.ok) {
+                return;
+            }
+            their_pages[first + i] = h;
+            their_have[first + i] = 1;
+        }
+    }
+
+    void log_differing_pages(int who) {
+        const uint64_t* ours = page_hashes(desync_frame);
+        if (ours == nullptr || std::find(their_have.begin(), their_have.end(), 0) != their_have.end()) {
+            log_session_line("[netplay] the pages that differ: unknown (the other copy's didn't all come)\n");
+            return;
+        }
+        std::string line = "[netplay] RDRAM that differs from player " + std::to_string(who + 1) + "'s:";
+        size_t ranges = 0;
+        for (size_t p = 0; p < PAGES; p++) {
+            if (ours[p] == their_pages[p]) {
+                continue;
+            }
+            size_t end = p;
+            while (end + 1 < PAGES && ours[end + 1] != their_pages[end + 1]) {
+                end++;
+            }
+            char range[40];
+            snprintf(range, sizeof(range), " %08X-%08X", uint32_t(0x80000000 + p * PAGE_SIZE),
+                    uint32_t(0x80000000 + (end + 1) * PAGE_SIZE - 1));
+            line += range;
+            ranges++;
+            p = end;
+        }
+        line += ranges == 0 ? " none in the pages (the frame's other words)\n" : "\n";
+        fputs(line.c_str(), stderr);
+        log_session_line(line.c_str());
+    }
+
+    // Both copies play on to the same frame after the desync, DESYNC_PLAY frames on, and write RDRAM there, so the two
+    // files differ only where the games do; meanwhile they swap the desynced frame's page hashes.
+    constexpr uint32_t DESYNC_PLAY = 60;
+    int desync_who = 0;
+
+    void desynced(uint32_t f, int who) {
+        if (!desyncing || desync_frame != f) {
+            desyncing = true;
+            desync_frame = f;
+            their_pages.assign(PAGES, 0);
+            their_have.assign(PAGES, 0);
+        }
+        desync_who = who;
+        say("[netplay] frame %u differs from player %d's: the session has desynced\n", f, who + 1);
+    }
+
+    // Each frame after a desync: the pages to the other copy, and at the frame both stop at, RDRAM and the end.
+    void desync_frame_step() {
+        if (!desyncing) {
+            return;
+        }
+        Remote& other = remotes[hosting ? desync_who : 0];
+        if (frame_no % 4 == 0) {
+            send_pages(other, desync_frame);
+        }
+        if (frame_no < uint64_t(desync_frame) + DESYNC_PLAY) {
+            return;
+        }
+        dump_rdram_now("desync-frame" + std::to_string(frame_no));
+        auto until = Clock::now() + std::chrono::milliseconds(1000);
+        while (Clock::now() < until && std::find(their_have.begin(), their_have.end(), 0) != their_have.end()) {
+            send_pages(other, desync_frame);
+            receive_packet(16);
+        }
+        for (int i = 0; i < 5; i++) {
+            send_all();
+            send_pages(other, desync_frame); // the other may still be waiting for this copy's
+        }
+        log_differing_pages(desync_who);
+        end_session(2);
+    }
+
     void compare_hashes(Remote& from, int who) {
-        while (!from.hashes.empty() && from.hashes.front().first < local_hashes.size()) {
+        while (!desyncing && !from.hashes.empty() && from.hashes.front().first < local_hashes.size()) {
             auto [f, h] = from.hashes.front();
             from.hashes.pop_front();
             if (local_hashes[f] != h) {
-                say("[netplay] frame %u differs from player %d's: the session has desynced\n", f, who + 1);
-                for (int i = 0; i < 20; i++) {
-                    send_all(); // so the others see this copy's hash for the frame too
-                }
-                end_session(2);
+                desynced(f, who);
             }
             hashes_compared++;
             from.compare_from = f + 1;
@@ -639,6 +752,23 @@ namespace {
             }
             if (handshaken) { // its buffers are made once the handshake ends; the guest sends again
                 take_inputs(r, from, who);
+            }
+        } else if (kind == KIND_DESYNC && handshaken) {
+            if (!desyncing) {
+                // The other copy found the frame first: this one names it too, with the frame the other names.
+                Reader peek = r;
+                uint32_t f = peek.u32();
+                if (peek.ok && f < local_hashes.size()) {
+                    desyncing = true;
+                    desync_frame = f;
+                    their_pages.assign(PAGES, 0);
+                    their_have.assign(PAGES, 0);
+                    take_pages(r);
+                    desynced(f, who);
+                    return true;
+                }
+            } else {
+                take_pages(r);
             }
         } else if (kind == KIND_FRAMES && !hosting) {
             if (from.identity_ok && delay_known) {
@@ -1018,6 +1148,7 @@ Frame netplay::detail::session_frame(uint64_t hash) {
         end_session(0);
     }
     local_hashes.push_back(hash);
+    desync_frame_step();
     if (jitter_ms > 0 && rand() % 4 == 0) {
         // A stall, as a busy computer or a late packet makes one, for the tests.
         std::this_thread::sleep_for(std::chrono::milliseconds(rand() % jitter_ms));

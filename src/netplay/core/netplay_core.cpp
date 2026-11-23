@@ -16,6 +16,7 @@
 // - For either: MP_NETPLAY_DELAY (frames of input delay, 3 by default), MP_NETPLAY_FRAMES (ends the session after
 //   that many frames, for tests), MP_NETPLAY_TIMEOUT_MS (how long a frame waits for a silent player, 15000) and
 //   MP_NETPLAY_DROP (a share of packets to drop, in percent, to test a lossy link).
+// - MP_NETPLAY_TEST_POKE=<frame>:<hex address>: changes RDRAM there at that frame, a desync for the tests.
 // - MP_NETPLAY_NO_MESSAGES=1: a session that ends for a reason only prints it, with no window for the player to close
 //   (for tests; src/netplay/mario_party.cpp).
 
@@ -79,6 +80,11 @@ namespace {
 
     // The game state's hash: each 64 KB chunk of RDRAM's words, those outside the game's ranges as zeroes, and the
     // chunks' hashes together.
+    // page_ring[f % PAGE_FRAMES] holds frame page_frame[...]'s page hashes.
+    std::vector<uint64_t> page_ring(PAGE_FRAMES * PAGES);
+    std::vector<uint64_t> page_frame(PAGE_FRAMES, UINT64_MAX);
+    uint8_t* last_rdram = nullptr;
+
     FrameHash hash_state(uint8_t* rdram) {
         static std::vector<Range> ranges;
         static std::vector<uint8_t> mask; // one flag a word: whether it is the game's state
@@ -95,14 +101,24 @@ namespace {
             }
         }
         FrameHash out;
+        page_frame[frame_no % PAGE_FRAMES] = frame_no;
+        last_rdram = rdram;
         for (size_t c = 0; c < CHUNKS; c++) {
             const uint8_t* chunk = rdram + c * CHUNK_SIZE;
             const uint8_t* in = mask.data() + c * CHUNK_SIZE / 4;
             uint64_t h = 0xCBF29CE484222325ULL ^ c;
+            uint64_t* pages = page_ring.data() + (frame_no % PAGE_FRAMES) * PAGES + c * (CHUNK_SIZE / PAGE_SIZE);
+            uint64_t page = 0;
             for (size_t i = 0; i < CHUNK_SIZE / 4; i++) {
                 uint32_t w;
                 memcpy(&w, chunk + i * 4, sizeof(w));
-                h = mix(h, in[i] ? w : 0);
+                w = in[i] ? w : 0;
+                h = mix(h, w);
+                page = mix(page, w);
+                if ((i + 1) % (PAGE_SIZE / 4) == 0) {
+                    pages[i / (PAGE_SIZE / 4)] = page;
+                    page = 0;
+                }
             }
             out.chunks[c] = h;
             out.total = mix(out.total, h);
@@ -422,6 +438,22 @@ void netplay::detail::close_session_record() {
     }
 }
 
+const uint64_t* netplay::detail::page_hashes(uint64_t frame) {
+    size_t slot = frame % PAGE_FRAMES;
+    return page_frame[slot] == frame ? page_ring.data() + slot * PAGES : nullptr;
+}
+
+void netplay::detail::dump_rdram_now(const std::string& name) {
+    if (last_rdram == nullptr) {
+        return;
+    }
+    std::string out = (record_folder.empty() ? std::string(".") : record_folder) + "/" + name + ".rdram";
+    if (FILE* f = fopen(out.c_str(), "wb")) {
+        fwrite(last_rdram, 1, RDRAM_SIZE, f);
+        fclose(f);
+    }
+}
+
 const std::string& netplay::detail::session_record_folder() {
     return record_folder;
 }
@@ -488,6 +520,20 @@ bool netplay::sample_pads() {
 }
 
 Frame netplay::advance(uint8_t* rdram) {
+    static int64_t poke_frame = -1;
+    static uint32_t poke_address = 0;
+    if (frame_no == 0) {
+        if (const char* poke = getenv("MP_NETPLAY_TEST_POKE")) {
+            // <frame>:<address>: changes a word of RDRAM at that frame, a desync for the tests to find.
+            poke_frame = strtoll(poke, nullptr, 10);
+            if (const char* colon = strchr(poke, ':')) {
+                poke_address = uint32_t(strtoul(colon + 1, nullptr, 16)) & ~3u;
+            }
+        }
+    }
+    if (int64_t(frame_no) == poke_frame && poke_address >= 0x80000000u && poke_address < 0x80000000u + RDRAM_SIZE) {
+        rdram[poke_address - 0x80000000u] ^= 0x5A;
+    }
     FrameHash h = hash_state(rdram);
     for (int64_t f : dump_frames) {
         if (int64_t(frame_no) == f) {

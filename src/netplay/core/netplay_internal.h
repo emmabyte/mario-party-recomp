@@ -6,6 +6,8 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "netplay_core.h"
 
@@ -14,6 +16,11 @@ namespace netplay::detail {
     constexpr size_t RDRAM_SIZE = 8 * 1024 * 1024;
     constexpr size_t CHUNK_SIZE = 64 * 1024;
     constexpr size_t CHUNKS = RDRAM_SIZE / CHUNK_SIZE;
+
+    // Finer, for naming what differs when a session desyncs: 4 KB pages, the last PAGE_FRAMES frames' kept.
+    constexpr size_t PAGE_SIZE = 4 * 1024;
+    constexpr size_t PAGES = RDRAM_SIZE / PAGE_SIZE;
+    constexpr size_t PAGE_FRAMES = 256;
 
     struct FrameHash {
         uint64_t total = 0;
@@ -26,6 +33,10 @@ namespace netplay::detail {
     extern std::atomic<uint32_t> connected_mask;
 
     Frame take_local_frame();
+    // The page hashes of a frame of the last PAGE_FRAMES, or nullptr.
+    const uint64_t* page_hashes(uint64_t frame);
+    // Writes RDRAM as it is now to the session's record folder (or the working folder), as <name>.rdram.
+    void dump_rdram_now(const std::string& name);
 
     // session.cpp
     // A session that can't start (no such host, a port in use) ends the program, saying why.
