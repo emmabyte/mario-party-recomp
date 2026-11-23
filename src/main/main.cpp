@@ -63,7 +63,7 @@
 #include "window_icon_bmp.h"
 #endif
 
-const std::string version_string = "0.2.14-netplay-alpha.4";
+const std::string version_string = "0.2.14-netplay-alpha.5";
 
 template<typename... Ts>
 void exit_error(const char* str, Ts ...args) {
@@ -471,14 +471,13 @@ void on_launcher_update(recompui::LauncherMenu*) {
 void on_launcher_init(recompui::LauncherMenu* menu) {
     const recomp::GameEntry& game = supported_games[0];
     auto game_options_menu = menu->init_game_options_menu(game.game_id, game.mod_game_id, game.display_name, game.thumbnail_bytes);
-    // RecompFrontend's options, with Online Play after Start Game: the settings' Online tab, where the next game is
-    // set to host or join a session (src/netplay/online_tab.cpp).
+    // RecompFrontend's options, with Online Play after Start Game: its screens, where a party is hosted or joined and
+    // starts the game once everyone is ready (src/netplay/online_screens.cpp).
     game_options_menu->add_start_game_or_load_rom_option();
     if (mp_netplay::available()) {
         game_options_menu->add_option("Online Play", [mod_game_id = game.mod_game_id, game_id = game.game_id]() {
             recompui::update_game_mod_id(mod_game_id);
-            recompui::hide_all_contexts();
-            mp_netplay::open_settings_tab([game_id]() {
+            mp_netplay::open_online([game_id]() {
                 if (!recomp::is_rom_valid(game_id)) {
                     recompui::open_info_prompt("Online Play", "Load your Mario Party ROM first, with Load ROM in the "
                         "launcher.", "OK", []() {}, recompui::ButtonStyle::Primary);

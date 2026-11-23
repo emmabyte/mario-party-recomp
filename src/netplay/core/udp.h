@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace netplay::udp {
     // An IPv4 address and port, as the network orders them.
@@ -30,4 +31,7 @@ namespace netplay::udp {
     size_t receive(void* data, size_t size, int timeout_ms, Endpoint& from);
 
     void close();
+
+    // This computer's IPv4 addresses, but loopback and link-local ones: where others may reach it (a VPN's among them).
+    std::vector<std::string> local_addresses();
 }

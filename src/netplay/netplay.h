@@ -7,8 +7,8 @@
 
 #include "ultramodern/input.hpp"
 
-namespace netplay {
-    struct SessionSettings;
+namespace recomp::config {
+    class Config;
 }
 
 namespace mp_netplay {
@@ -19,22 +19,17 @@ namespace mp_netplay {
     // At the game's entry, before it reads its save: a session's handshake, and the host's save for a guest.
     void start();
 
-    // online_tab.cpp: the Online tab in the settings (before recompui::config::finalize), the launcher's way to it,
-    // and the session it says to start, if any (start does this).
+    // online_tab.cpp: the Online tab in the settings (before recompui::config::finalize), which keeps the name, port
+    // and address the Online Play screens use.
     void add_settings_tab();
     // Whether netplay is built in (the MP_NETPLAY CMake option): the launcher shows Online Play only then.
     bool available();
-    // Opens the Online tab from the launcher. For the tab's Start Online Game button: can_start says whether the game
-    // can start (a ROM is loaded; it tells the player if not), and start starts it, as the launcher's Start Game does,
-    // once the lobby is ready.
-    void open_settings_tab(std::function<bool()> can_start, std::function<void()> start);
-    // lobby_view.cpp: the lobby, from Start Online Game, until the session starts (start_game) or the player leaves it
-    // (back). Returns false, telling the player why, if the session couldn't open.
-    bool open_lobby(const netplay::SessionSettings& settings, std::function<void()> start_game,
-                    std::function<void()> back);
-    bool start_from_settings();
-    // At the game's entry (start): the Online tab leaves its Start Online Game button out from then on.
-    void note_game_started();
+    // online_screens.cpp: the launcher's Online Play screens (hosting or joining a party, and its lobby). can_start
+    // says whether the game can start (a ROM is loaded; it tells the player if not), and start_game starts it, as the
+    // launcher's Start Game does, once the lobby is ready. close_online goes back to the launcher.
+    void set_online_config(recomp::config::Config* config);
+    void open_online(std::function<bool()> can_start, std::function<void()> start_game);
+    void close_online();
 
     // Whether an online session is running: the sound keeps a cushion then (src/main/main.cpp).
     bool active();

@@ -19,7 +19,9 @@
 // own, as a lobby: the host takes guests as they come (up to four players in all) and says how many play only when its
 // player presses Start, which ends the lobby; until then its hellos say 0 players, a guest that goes quiet or says
 // goodbye (KIND_BYE) leaves the lobby and the guests after it move up a player, and a guest whose copy differs is turned
-// away. A lobby that ends early (the host closed it, a copy differs, the host never answered) doesn't end the program
+// away. Every hello also carries its player's name and whether they're ready, and the host's carry its list of the
+// players (each one's name, whether they're ready, and their round trip to the host), for the lobby's screen; the host
+// starts only once every player, its own too, is ready. A lobby that ends early (the host closed it, a copy differs, the host never answered) doesn't end the program
 // as a session does: the lobby's status says why, for the launcher to show.
 //
 // Then the packets, each frame and again every 16 ms while a frame waits. A guest's to the host: its inputs from the
@@ -53,7 +55,7 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
     constexpr uint32_t SESSION_MAGIC = 0x534E504D; // "MPNS"
-    constexpr uint32_t SESSION_VERSION = 5;
+    constexpr uint32_t SESSION_VERSION = 6;
     constexpr uint8_t KIND_HELLO = 0;
     constexpr uint8_t KIND_INPUTS = 1; // a guest's to the host
     constexpr uint8_t KIND_FRAMES = 2; // the host's to a guest
@@ -116,8 +118,22 @@ namespace {
         // Round trips, from the hellos: each carries its sender's clock and the last one it had from the other.
         uint64_t their_clock = 0;
         uint64_t their_clock_at = 0; // this copy's clock when their_clock came
-        std::vector<double> rtts_ms;
+        std::vector<double> rtts_ms; // the latest, at most 32
+        // The lobby: whether it has readied up, and its player's name.
+        bool ready = false;
+        std::string name;
     };
+    // On a guest: the lobby's players as the host last listed them.
+    struct Seat {
+        bool present = false, ready = false;
+        int ping_ms = -1;
+        std::string name;
+    };
+    Seat roster[PORTS];
+    constexpr size_t MAX_NAME = 16;
+    std::string local_name;
+    std::atomic<bool> local_ready{ false };
+    std::string peer_text;
 
     int slot_for(const udp::Endpoint& from);
     void drop_guest(int p);
@@ -136,7 +152,7 @@ namespace {
     std::vector<uint8_t> whole_have;
 
     struct Writer {
-        uint8_t buf[1400];
+        uint8_t buf[1472]; // a UDP datagram that fits a 1500-byte link
         size_t n = 0;
         void u8(uint8_t v) { if (n < sizeof(buf)) buf[n++] = v; }
         void u16(uint16_t v) { u8(uint8_t(v)); u8(uint8_t(v >> 8)); }
@@ -217,6 +233,24 @@ namespace {
         }
     }
 
+    void put_name(Writer& w, const std::string& name) {
+        size_t n = std::min(name.size(), MAX_NAME);
+        w.u8(uint8_t(n));
+        for (size_t i = 0; i < n; i++) {
+            w.u8(uint8_t(name[i]));
+        }
+    }
+
+    std::string take_name(Reader& r) {
+        size_t n = std::min<size_t>(r.u8(), MAX_NAME);
+        std::string name;
+        for (size_t i = 0; i < n && r.ok; i++) {
+            char c = char(r.u8());
+            name.push_back(c >= 32 && c != 127 ? c : '?');
+        }
+        return name;
+    }
+
     void send_hello(Remote& to) {
         Writer w;
         header(w, KIND_HELLO);
@@ -241,6 +275,18 @@ namespace {
         w.u8(uint8_t(hosting && delay_known ? delay : 0));
         // The host's to a guest: the player it is.
         w.u8(uint8_t(hosting ? int(&to - remotes) : 0));
+        // The lobby: this copy's ready and name, and the host's list of everyone's.
+        w.u8(local_ready ? 1 : 0);
+        put_name(w, local_name);
+        if (hosting) {
+            for (int p = 0; p < PORTS; p++) {
+                const Remote& r = remotes[p];
+                bool present = p == 0 || r.known;
+                w.u8(uint8_t((present ? 1 : 0) | ((p == 0 ? bool(local_ready) : r.ready) ? 2 : 0)));
+                w.u16(uint16_t(p == 0 || r.rtts_ms.empty() ? 0xFFFF : std::min(65534.0, median_rtt(r))));
+                put_name(w, p == 0 ? local_name : r.name);
+            }
+        }
         send(to, w);
     }
 
@@ -525,8 +571,25 @@ namespace {
             uint32_t held = r.u32();
             int their_delay = r.u8();
             int slot = r.u8();
+            bool their_ready = r.u8() != 0;
+            std::string their_name = take_name(r);
+            Seat their_roster[PORTS];
+            if (!hosting) {
+                for (int p = 0; p < PORTS; p++) {
+                    uint8_t flags = r.u8();
+                    uint16_t ping = r.u16();
+                    their_roster[p] = Seat{ (flags & 1) != 0, (flags & 2) != 0, ping == 0xFFFF ? -1 : int(ping), take_name(r) };
+                }
+            }
             if (!r.ok) {
                 return true;
+            }
+            from.ready = their_ready;
+            from.name = their_name;
+            if (!hosting) {
+                for (int p = 0; p < PORTS; p++) {
+                    roster[p] = their_roster[p];
+                }
             }
             if (!hosting && !handshaken) {
                 // The host's hellos: this copy's player (which moves up if one before it leaves the lobby), and how
@@ -553,8 +616,11 @@ namespace {
             check_identity(from, who, theirs);
             from.their_clock = their_clock;
             from.their_clock_at = clock_us();
-            if (echo != 0 && from.rtts_ms.size() < 64 && clock_us() - echo > held) {
+            if (echo != 0 && clock_us() - echo > held) {
                 from.rtts_ms.push_back(double(clock_us() - echo - held) / 1000.0);
+                if (from.rtts_ms.size() > 32) {
+                    from.rtts_ms.erase(from.rtts_ms.begin());
+                }
             }
             if (!hosting) {
                 host_save = std::move(save);
@@ -742,19 +808,25 @@ namespace {
         status.phase = phase;
         status.host = hosting;
         status.player = player;
-        status.players.clear();
-        if (hosting) {
-            status.players.push_back("you");
-            for (int p = 1; p < PORTS; p++) {
-                if (remotes[p].known) {
-                    status.players.push_back(remotes[p].endpoint.text());
+        for (int p = 0; p < PORTS; p++) {
+            LobbySeat& seat = status.seats[p];
+            if (hosting) {
+                const Remote& r = remotes[p];
+                seat.present = p == 0 || r.known;
+                seat.ready = p == 0 ? bool(local_ready) : r.ready;
+                seat.ping_ms = p == 0 || r.rtts_ms.empty() ? -1 : int(std::lround(median_rtt(r)));
+                seat.name = p == 0 ? local_name : r.name;
+                seat.address = p == 0 || !r.known ? std::string() : r.endpoint.text();
+            } else {
+                seat = LobbySeat{ roster[p].present, roster[p].ready, roster[p].ping_ms, roster[p].name, "" };
+                if (p == player) {
+                    seat.present = true;
+                    seat.ready = local_ready;
+                    seat.name = local_name;
                 }
             }
-        } else if (player > 0) {
-            for (int p = 0; p <= player; p++) {
-                status.players.push_back(p == 0 ? "the host" : p == player ? "you" : "");
-            }
         }
+        status.peer = peer_text;
         status.said = said;
         status.reason = phase == LobbyStatus::Failed ? said.substr(std::min(reason_from, said.size())) : std::string();
     }
@@ -788,10 +860,12 @@ namespace {
                 auto now = Clock::now();
                 if (hosting && lobby_start_wanted && !lobby_started) {
                     int n = 1;
+                    bool all_ready = local_ready;
                     while (n < PORTS && remotes[n].known) {
+                        all_ready = all_ready && remotes[n].ready;
                         n++;
                     }
-                    if (n >= 2) {
+                    if (n >= 2 && all_ready) {
                         players = n;
                         lobby_started = true;
                         say("[netplay] starting with %d players\n", players);
@@ -1012,7 +1086,12 @@ bool netplay::detail::lobby_begin(const SessionSettings& settings) {
     said.clear();
     host_save.clear();
     handshaken = delay_known = lobby_started = save_used = record_opened = false;
-    lobby_start_wanted = lobby_cancel = false;
+    lobby_start_wanted = lobby_cancel = local_ready = false;
+    for (Seat& seat : roster) {
+        seat = Seat{};
+    }
+    local_name = settings.name.substr(0, MAX_NAME);
+    peer_text = settings.peer;
     delay = 3;
     in_lobby = true;
     reason_from = 0;
@@ -1024,6 +1103,11 @@ bool netplay::detail::lobby_begin(const SessionSettings& settings) {
     }
     if (hosting) {
         players = PORTS; // the guests' places, until Start says how many play
+        std::lock_guard lock{ status_mutex };
+        status.share.clear();
+        for (const std::string& a : udp::local_addresses()) {
+            status.share.push_back(a + ":" + std::to_string(settings.port != 0 ? settings.port : 7845));
+        }
     }
     set_status(LobbyStatus::Waiting);
     lobby_thread = std::thread(run_lobby);
@@ -1033,6 +1117,10 @@ bool netplay::detail::lobby_begin(const SessionSettings& settings) {
 LobbyStatus netplay::lobby_status() {
     std::lock_guard lock{ status_mutex };
     return status;
+}
+
+void netplay::lobby_set_ready(bool ready) {
+    local_ready = ready;
 }
 
 void netplay::lobby_start() {

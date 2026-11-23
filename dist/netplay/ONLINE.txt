@@ -5,21 +5,20 @@ Two to four players, each on their own computer with this same release, their ow
 mods enabled and the same Board Movement and Map Scrolling settings. One player hosts; the others join.
 
 1. Everyone: start MarioPartyRecompiled and pick your ROM with Load ROM the first time.
-2. The host: choose Online Play in the launcher, set Online Play to Host and press Start Online Game at the
-   bottom. The lobby opens and lists each player as they join.
-3. Each other player: choose Online Play, set Online Play to Join, type the host's address and press Start Online
-   Game. Their lobby shows their player number (the host gives them out in the order players join) and waits for
-   the host.
-4. When everyone is in, the host presses Start, and the game begins on every computer. Back leaves the lobby. Each
-   player plays with their own first controller (or the keyboard).
-
-To play alone again, set Online Play back to Off.
+2. Everyone: choose Online Play in the launcher and type your name.
+3. The host: choose Host a Party. Your party opens, with the address to give the others.
+4. Each other player: choose Join a Party, type the host's address and choose Connect!. The host gives each player
+   their number in the order they join.
+5. Everyone chooses Ready? when they're set. Once all are ready, the host chooses Let's Party! and the game begins on
+   every computer. Characters and the party's rules are chosen in the game as usual. Each player plays with their own
+   first controller (or the keyboard). Leave leaves the party.
 
 The host's address
 ------------------
 The others must be able to reach UDP port 7845 on the host's computer:
 
-- Easiest: everyone joins the same VPN (Radmin VPN, Tailscale or ZeroTier) and the host gives the address it shows.
+- Easiest: everyone joins the same VPN (Radmin VPN, Tailscale or ZeroTier) and the host gives the address the VPN
+  shows (the party lists this computer's addresses too).
 - Over the internet without a VPN: forward UDP port 7845 on the host's router to the host's computer, and give the
   others the host's public address (a site such as whatismyip.com shows it).
 - On the same home network: the host's local address (like 192.168.1.20).

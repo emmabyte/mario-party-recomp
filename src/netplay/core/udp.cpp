@@ -2,6 +2,8 @@
 
 #include "udp.h"
 
+#include <algorithm>
+
 #include <cstdio>
 #include <cstring>
 
@@ -16,6 +18,7 @@ bool netplay::udp::resolve(const std::string&, Endpoint&) { return false; }
 void netplay::udp::send(const Endpoint&, const void*, size_t) {}
 size_t netplay::udp::receive(void*, size_t, int, Endpoint&) { return 0; }
 void netplay::udp::close() {}
+std::vector<std::string> netplay::udp::local_addresses() { return {}; }
 
 #else
 
@@ -27,6 +30,7 @@ static constexpr socket_t NO_SOCKET = INVALID_SOCKET;
 static void close_socket(socket_t s) { closesocket(s); }
 #else
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/select.h>
@@ -147,6 +151,45 @@ void netplay::udp::close() {
         close_socket(sock);
         sock = NO_SOCKET;
     }
+}
+
+std::vector<std::string> netplay::udp::local_addresses() {
+    std::vector<std::string> out;
+    auto add = [&](uint32_t a) { // host order
+        if ((a >> 24) == 127 || (a >> 16) == 0xA9FE || a == 0) {
+            return; // loopback, link-local
+        }
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%u.%u.%u.%u", a >> 24, (a >> 16) & 0xFF, (a >> 8) & 0xFF, a & 0xFF);
+        if (std::find(out.begin(), out.end(), buf) == out.end()) {
+            out.push_back(buf);
+        }
+    };
+#if defined(_WIN32)
+    if (!start()) {
+        return out;
+    }
+    char name[256];
+    addrinfo hints{}, *found = nullptr;
+    hints.ai_family = AF_INET;
+    if (gethostname(name, sizeof(name)) == 0 && getaddrinfo(name, nullptr, &hints, &found) == 0) {
+        for (addrinfo* ai = found; ai != nullptr; ai = ai->ai_next) {
+            add(ntohl(reinterpret_cast<sockaddr_in*>(ai->ai_addr)->sin_addr.s_addr));
+        }
+        freeaddrinfo(found);
+    }
+#else
+    ifaddrs* list = nullptr;
+    if (getifaddrs(&list) == 0) {
+        for (ifaddrs* i = list; i != nullptr; i = i->ifa_next) {
+            if (i->ifa_addr != nullptr && i->ifa_addr->sa_family == AF_INET) {
+                add(ntohl(reinterpret_cast<sockaddr_in*>(i->ifa_addr)->sin_addr.s_addr));
+            }
+        }
+        freeifaddrs(list);
+    }
+#endif
+    return out;
 }
 
 #endif

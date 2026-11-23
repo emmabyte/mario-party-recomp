@@ -95,6 +95,7 @@ namespace netplay {
         std::string peer;
         int player = 0;
         uint16_t port = 0;
+        std::string name; // the player's, for the lobby (at most 16 bytes); empty: "Player N"
     };
     // Sets the session start() starts, unless the environment set one (netplay_core.cpp). Returns false if another
     // mode runs.
@@ -104,18 +105,30 @@ namespace netplay {
     // own while the players gather, so the launcher can show who is there. The host's player starts it (lobby_start)
     // with however many have joined; a guest's lobby is ready once its host has started. Then lobby_play makes it the
     // session start() starts, and the launcher starts the game; or lobby_close (Back) leaves it, telling the others.
+    // Each player readies up (lobby_set_ready); the host can start once everyone has.
+    struct LobbySeat {
+        bool present = false;
+        bool ready = false;
+        int ping_ms = -1;    // the round trip between this player and the host; -1 for the host, or not yet known
+        std::string name;
+        std::string address; // on the host: where the guest's packets come from
+    };
     struct LobbyStatus {
         enum Phase { Waiting, Ready, Failed, Closed };
         Phase phase = Waiting;
         bool host = false;
         int player = -1;                  // this copy's, from 0; -1 until a guest's host has given it one
-        std::vector<std::string> players; // by player: the host's player sees each guest's address
+        std::array<LobbySeat, PORTS> seats;
+        std::vector<std::string> share;   // on the host: its addresses (with the port), for the others to join at
+        std::string peer;                 // on a guest: the host's address, as typed
         std::string said;                 // the session's lines so far
         std::string reason;               // Failed: the lines that say why
     };
     // Returns false if another mode runs, or the session couldn't open (the status says why).
     bool lobby_open(const SessionSettings& settings);
     LobbyStatus lobby_status();
+    void lobby_set_ready(bool ready);
+    // On the host: starts the session once everyone, the host included, is ready.
     void lobby_start();
     void lobby_close();
     // Once the status is Ready. Returns false before.

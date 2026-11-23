@@ -59,12 +59,12 @@ or a session.
 ## Playing a session
 
 Two to four players, each on their own computer with the same ROM, the same build, the same mods enabled and the same
-Board Movement and Map Scrolling. One hosts; the others join the host. The launcher's **Online Play** opens the
-settings' Online tab (`src/netplay/online_tab.cpp`): Online Play Off (the default), Host (with how many play and the
-port) or Join (with the host's address). Its Start Online Game button opens a lobby (`src/netplay/lobby_view.cpp`)
-where the handshake runs before the game starts (`netplay::lobby_open`, `core/session.cpp`): the host sees each guest
-join, and its Start settles how many play and starts the game everywhere; Back leaves it. The launcher's own Start
-Game with Online set starts the session without a lobby, waiting at the game's entry. The environment starts one too,
+Board Movement and Map Scrolling. One hosts; the others join the host. The launcher's **Online Play** opens its
+screens (`src/netplay/online_screens.cpp`): Host a Party, or Join a Party at the host's address, then the party, a
+lobby where the handshake runs before the game starts (`netplay::lobby_open`, `core/session.cpp`). It shows each
+player as they join, with their name, their round trip to the host and whether they're ready; once everyone is, the
+host's Let's Party! settles how many play and starts the game everywhere; Leave leaves it. The settings' Online tab
+(`src/netplay/online_tab.cpp`) keeps the name, the host's port and the address last joined. The environment starts one too,
 for the tests (`src/netplay/core/netplay_core.cpp` lists the variables), and a release carries `dist/netplay`'s
 `host` and `join` scripts (`.bat` on Windows, `.sh` on Linux) that set it, and `ONLINE.txt`, the players' how-to.
 
