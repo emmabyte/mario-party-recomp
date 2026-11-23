@@ -4,8 +4,15 @@
 // netplay_core.h). A frame's inputs are every player's pad as each copy sampled it the session's delay in frames
 // earlier: each guest sends the host its own, the host puts each frame together once it has every player's, and sends the whole frame to
 // every guest. So every copy runs the same frames on the same inputs, and each game turns them into the same state (a
-// recording's replay tests that it does). Only the host needs a port others can reach. The first DELAY frames have no
-// inputs from anyone.
+// recording's replay tests that it does). Only the host needs a port others can reach. The first frames, as many as
+// the delay the session starts with, have no inputs from anyone.
+//
+// The delay moves as the session plays (adjust_delay, push_local): the host keeps measuring each guest's round trip
+// from the clocks its packets carry, and how long each copy's frames waited, and sends the delay it wants with the
+// whole frames. It goes up at once, when the round trips grow or frames wait, and down a frame at a time, after ten
+// seconds in which it could have, since a delay that stays put feels better than the lowest one. Each copy moves its
+// own delay to it by sampling its pad for two frames once, or for none, so no two copies need agree on when: a
+// frame's inputs are still whatever each player's copy sent. MP_NETPLAY_DELAY on the host holds it where it says.
 //
 // It starts with a handshake, before the game's entry (netplay::start): each guest sends the host the game's identity
 // (netplay_core.h's Game) until the host has it and has answered with its own, the guest's port, how many play, and
@@ -45,6 +52,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <condition_variable>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -56,7 +64,7 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
     constexpr uint32_t SESSION_MAGIC = 0x534E504D; // "MPNS"
-    constexpr uint32_t SESSION_VERSION = 6;
+    constexpr uint32_t SESSION_VERSION = 7;
     constexpr uint8_t KIND_HELLO = 0;
     constexpr uint8_t KIND_INPUTS = 1; // a guest's to the host
     constexpr uint8_t KIND_FRAMES = 2; // the host's to a guest
@@ -74,7 +82,9 @@ namespace {
     bool hosting = false;
     int player = 0;
     int players = 2;
-    int delay = 3;
+    int delay = 3;             // this copy's own delay now: how far ahead of the frame it plays it samples its pad
+    int first_delay = 3;       // the delay the session started with: the first frames, with no one's inputs
+    int target_delay = 3;      // the delay the host wants everyone at (in its whole frames' packets)
     bool delay_forced = false; // MP_NETPLAY_DELAY, on the host: no measuring
     bool delay_known = false;  // the host has chosen the session's delay (a guest: and sent it)
     int64_t session_frames = -1;
@@ -100,6 +110,7 @@ namespace {
     size_t reason_from = 0;      // where in said the lines of the lobby's last step begin: why it failed, if it did
     int jitter_ms = 0; // MP_NETPLAY_JITTER_MS: a stall of up to this long before one frame in four, for the tests
 
+    double recent_wait_ms = 0;          // this copy's frames' waits in the last second (note_wait)
     std::vector<Inputs> local_inputs;   // by frame
     std::vector<uint64_t> local_hashes; // by frame
     uint64_t hashes_compared = 0;
@@ -121,7 +132,9 @@ namespace {
         // Round trips, from the hellos: each carries its sender's clock and the last one it had from the other.
         uint64_t their_clock = 0;
         uint64_t their_clock_at = 0; // this copy's clock when their_clock came
-        std::vector<double> rtts_ms; // the latest, at most 32
+        uint64_t last_echo = 0, rtt_at = 0;
+        std::vector<double> rtts_ms; // the latest: at most 32 from the hellos, 64 in play
+        double waited_ms = 0;        // a guest's frames' waits in its last second, as it last said
         // The lobby: whether it has readied up, and its player's name.
         bool ready = false;
         std::string name;
@@ -213,8 +226,60 @@ namespace {
         std::_Exit(code);
     }
 
+    // MP_NETPLAY_LATENCY_MS=<ms>[:<jitter ms>[:<from s>:<for s>:<extra ms>]], for the tests: each packet this copy sends
+    // leaves that much later, give or take the jitter, with the extra added for a while from that many seconds in.
+    int latency_ms = 0, latency_jitter_ms = 0, spike_from_s = 0, spike_for_s = 0, spike_ms = 0;
+    Clock::time_point latency_start = Clock::now();
+    struct Delayed {
+        Clock::time_point at;
+        udp::Endpoint to;
+        std::vector<uint8_t> bytes;
+    };
+    std::deque<Delayed> delayed; // under delayed_mutex, sent by a thread of its own when each is due
+    std::mutex delayed_mutex;
+    std::condition_variable delayed_cv;
+    bool delayed_started = false;
+
+    void send_delayed() {
+        std::unique_lock lock{ delayed_mutex };
+        while (true) {
+            auto now = Clock::now();
+            auto next = Clock::time_point::max();
+            for (auto it = delayed.begin(); it != delayed.end();) {
+                if (it->at <= now) {
+                    udp::send(it->to, it->bytes.data(), it->bytes.size());
+                    it = delayed.erase(it);
+                } else {
+                    next = std::min(next, it->at);
+                    ++it;
+                }
+            }
+            if (next == Clock::time_point::max()) {
+                delayed_cv.wait(lock);
+            } else {
+                delayed_cv.wait_until(lock, next);
+            }
+        }
+    }
+
     void send(const Remote& to, const Writer& w) {
         if (!to.known || (drop_percent > 0 && rand() % 100 < drop_percent)) {
+            return;
+        }
+        if (latency_ms > 0 || latency_jitter_ms > 0 || spike_ms > 0) {
+            double s_in = std::chrono::duration<double>(Clock::now() - latency_start).count();
+            int ms = latency_ms + (latency_jitter_ms > 0 ? rand() % (latency_jitter_ms + 1) : 0);
+            if (spike_ms > 0 && s_in >= spike_from_s && s_in < spike_from_s + spike_for_s) {
+                ms += spike_ms;
+            }
+            std::lock_guard lock{ delayed_mutex };
+            if (!delayed_started) {
+                delayed_started = true;
+                std::thread(send_delayed).detach();
+            }
+            delayed.push_back({ Clock::now() + std::chrono::milliseconds(ms), to.endpoint,
+                    std::vector<uint8_t>(w.buf, w.buf + w.n) });
+            delayed_cv.notify_one();
             return;
         }
         udp::send(to.endpoint, w.buf, w.n);
@@ -294,6 +359,34 @@ namespace {
         send(to, w);
     }
 
+    // Round trips during play too: each inputs and frames packet carries the clocks a hello does, and a guest's says how
+    // much its frames waited lately, for the host's choice of delay (adjust_delay).
+    void put_clock(Writer& w, const Remote& to) {
+        w.u64(clock_us());
+        w.u64(to.their_clock);
+        w.u32(to.their_clock != 0 ? uint32_t(clock_us() - to.their_clock_at) : 0);
+    }
+
+    void take_clock(Reader& r, Remote& from) {
+        uint64_t their_clock = r.u64();
+        uint64_t echo = r.u64();
+        uint32_t held = r.u32();
+        if (!r.ok) {
+            return;
+        }
+        from.their_clock = their_clock;
+        from.their_clock_at = clock_us();
+        // One a 100 ms is plenty, and keeps the latest 64 to about 6 seconds' worth.
+        if (echo != 0 && echo != from.last_echo && clock_us() - echo > held && clock_us() - from.rtt_at > 100000) {
+            from.last_echo = echo;
+            from.rtt_at = clock_us();
+            from.rtts_ms.push_back(double(clock_us() - echo - held) / 1000.0);
+            if (from.rtts_ms.size() > 64) {
+                from.rtts_ms.erase(from.rtts_ms.begin());
+            }
+        }
+    }
+
     // The first frame some player's input is still missing for: on the host, how far the whole frames go.
     uint32_t wholes_ready() {
         uint32_t ready = uint32_t(local_inputs.size());
@@ -313,7 +406,7 @@ namespace {
         Writer w;
         header(w, KIND_INPUTS);
         w.u32(host.next);
-        uint32_t first = std::max<uint32_t>(host.ack, uint32_t(delay));
+        uint32_t first = std::max<uint32_t>(host.ack, uint32_t(first_delay));
         uint32_t end = uint32_t(local_inputs.size());
         uint32_t count = end > first ? std::min<uint32_t>(end - first, MAX_SEND) : 0;
         w.u32(first);
@@ -324,6 +417,8 @@ namespace {
             }
         }
         put_hashes(w);
+        put_clock(w, host);
+        w.u16(uint16_t(std::min(65535.0, recent_wait_ms)));
         send(host, w);
     }
 
@@ -335,7 +430,7 @@ namespace {
             Writer w;
             header(w, KIND_FRAMES);
             w.u32(guest.next);
-            uint32_t first = std::max<uint32_t>(guest.ack, uint32_t(delay));
+            uint32_t first = std::max<uint32_t>(guest.ack, uint32_t(first_delay));
             uint32_t count = ready > first ? std::min<uint32_t>(ready - first, MAX_SEND) : 0;
             w.u32(first);
             w.u8(uint8_t(count));
@@ -348,6 +443,8 @@ namespace {
                 }
             }
             put_hashes(w);
+            put_clock(w, guest);
+            w.u8(uint8_t(target_delay));
             send(guest, w);
         }
     }
@@ -572,6 +669,11 @@ namespace {
             guest.next++;
         }
         take_hashes(r, guest, who);
+        take_clock(r, guest);
+        uint16_t waited = r.u16();
+        if (r.ok) {
+            guest.waited_ms = waited;
+        }
     }
 
     // On a guest, the host's whole frames.
@@ -605,6 +707,11 @@ namespace {
             host.next++;
         }
         take_hashes(r, host, 0);
+        take_clock(r, host);
+        int target = r.u8();
+        if (r.ok && target >= 1 && target <= 15) {
+            target_delay = target;
+        }
     }
 
     // Takes in one packet, if one came within wait_ms. Returns whether one did.
@@ -855,7 +962,19 @@ namespace {
     // How long frames waited for the others, logged every 10 seconds (the session's log, in its record).
     double waited_ms = 0, longest_wait_ms = 0;
     int frames_waited = 0;
+    std::deque<std::pair<Clock::time_point, double>> wait_window; // the last second's waits
     void note_wait(double ms) {
+        auto now = Clock::now();
+        if (ms > 1.0) {
+            wait_window.emplace_back(now, ms);
+        }
+        while (!wait_window.empty() && now - wait_window.front().first > std::chrono::seconds(1)) {
+            wait_window.pop_front();
+        }
+        recent_wait_ms = 0;
+        for (const auto& w : wait_window) {
+            recent_wait_ms += w.second;
+        }
         if (ms > 1.0) {
             waited_ms += ms;
             longest_wait_ms = std::max(longest_wait_ms, ms);
@@ -863,18 +982,83 @@ namespace {
         }
         if (frame_no % 300 == 299) {
             char line[200];
-            snprintf(line, sizeof(line), "[netplay] frames to %" PRIu64 ": %d waited, %.0f ms in all, the longest %.0f ms\n",
-                    frame_no, frames_waited, waited_ms, longest_wait_ms);
+            snprintf(line, sizeof(line), "[netplay] frames to %" PRIu64 ": %d waited, %.0f ms in all, the longest %.0f ms; "
+                    "delay %d\n", frame_no, frames_waited, waited_ms, longest_wait_ms, delay);
             log_session_line(line);
             waited_ms = longest_wait_ms = 0;
             frames_waited = 0;
         }
     }
 
+    // On the host, every half second of play: the delay everyone should be at. It covers the slowest guest's round trip
+    // as it is most of the time (the 90th percentile of the last few seconds') with a little to spare, and goes up at
+    // once when that grows or someone's frames wait a frame's time in a second, but down only a frame at a time, after
+    // ten seconds in which it could have: a steady delay feels better than the lowest one (docs/netplay.md).
+    Clock::time_point lower_since{};
+    void adjust_delay() {
+        if (!hosting || delay_forced || frame_no % 15 != 0) {
+            return;
+        }
+        double worst_rtt = 0, worst_wait = recent_wait_ms;
+        for (int p = 1; p < players; p++) {
+            std::vector<double> v = remotes[p].rtts_ms;
+            if (v.size() >= 8) {
+                std::sort(v.begin(), v.end());
+                worst_rtt = std::max(worst_rtt, v[v.size() * 9 / 10]);
+            }
+            worst_wait = std::max(worst_wait, remotes[p].waited_ms);
+        }
+        constexpr double frame_ms = 1000.0 / 30.0;
+        int need = std::clamp(int(std::ceil((worst_rtt + 20.0) / frame_ms)), 2, 15);
+        int wanted = target_delay;
+        if (need > target_delay) {
+            wanted = need;
+        } else if (worst_wait > frame_ms && target_delay < 15) {
+            wanted = target_delay + 1;
+        }
+        auto now = Clock::now();
+        if (wanted > target_delay) {
+            lower_since = now;
+        } else if (need < target_delay && worst_wait < 1.0) {
+            if (lower_since == Clock::time_point{}) {
+                lower_since = now;
+            } else if (now - lower_since > std::chrono::seconds(10)) {
+                wanted = target_delay - 1;
+                lower_since = now;
+            }
+        } else {
+            lower_since = Clock::time_point{};
+        }
+        if (wanted != target_delay) {
+            char line[200];
+            snprintf(line, sizeof(line), "[netplay] frame %" PRIu64 ": delay %d to %d (round trip %.0f ms, waits %.0f ms "
+                    "in the last second)\n", frame_no, target_delay, wanted, worst_rtt, worst_wait);
+            fputs(line, stderr);
+            log_session_line(line);
+            target_delay = wanted;
+        }
+    }
+
+    // This copy's pad for the frames its delay is ahead, a frame's at a time: a delay that grows by a frame samples
+    // the pad for two frames this once, one that shrinks by a frame samples none, as the frame it would has its sample
+    // already. Each copy moves its own, so the copies needn't agree on when: the frames' inputs are whatever each
+    // player's copy sent, the same everywhere.
+    void push_local(const Inputs& mine) {
+        if (target_delay > delay && delay < 15) {
+            local_inputs.push_back(mine);
+            delay++;
+        } else if (target_delay < delay && delay > 1 && local_inputs.size() > frame_no + 1) {
+            delay--;
+            return;
+        }
+        local_inputs.push_back(mine);
+    }
+
     // The buffers, once the delay is known: the first frames have no inputs from anyone.
     void prepare_buffers() {
         // The ports with a controller, from power-on (the game's entry comes after the handshake): one for each player.
         connected_mask = (1u << players) - 1;
+        first_delay = target_delay = delay;
         local_inputs.assign(size_t(delay), Inputs{});
         for (Remote& r : remotes) {
             r.inputs.assign(size_t(delay), Inputs{});
@@ -1081,7 +1265,7 @@ namespace {
 
 bool netplay::detail::open_session(const SessionSettings& settings) {
     hosting = settings.host;
-    if (const char* d = getenv("MP_NETPLAY_DELAY")) {
+    if (const char* d = getenv("MP_NETPLAY_DELAY"); d != nullptr && *d != '\0') {
         delay = std::clamp(atoi(d), 1, 15); // the host's, for every player; a guest's is ignored
         delay_forced = true;
     }
@@ -1089,6 +1273,9 @@ bool netplay::detail::open_session(const SessionSettings& settings) {
     if (const char* t = getenv("MP_NETPLAY_TIMEOUT_MS")) timeout_ms = atoi(t);
     if (const char* d = getenv("MP_NETPLAY_DROP")) drop_percent = atoi(d);
     if (const char* j = getenv("MP_NETPLAY_JITTER_MS")) jitter_ms = atoi(j);
+    if (const char* l = getenv("MP_NETPLAY_LATENCY_MS")) {
+        sscanf(l, "%d:%d:%d:%d:%d", &latency_ms, &latency_jitter_ms, &spike_from_s, &spike_for_s, &spike_ms);
+    }
     uint16_t port = settings.port;
     if (hosting) {
         player = 0;
@@ -1160,7 +1347,8 @@ Frame netplay::detail::session_frame(uint64_t hash) {
     for (int i = 0; i < game.samples_per_frame; i++) {
         mine[i] = taken.samples[i][0];
     }
-    local_inputs.push_back(mine);
+    adjust_delay();
+    push_local(mine);
 
     while (receive_packet(0)) {
     }

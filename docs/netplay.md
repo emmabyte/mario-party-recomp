@@ -82,7 +82,10 @@ The handshake runs at the game's entry, before it reads its save (`mp_netplay::s
   what differs and quits.
 - The hellos carry clocks, and the host chooses the delay from the longest round trip it measures: a guest's frame
   waits for its inputs to reach the host and the whole frame to come back, so the delay covers a round trip and some
-  for its jitter (`MP_NETPLAY_DELAY` on the host sets it instead).
+  for its jitter (`MP_NETPLAY_DELAY` on the host sets it instead). As the session plays the host keeps measuring, and
+  the delay goes up at once when the connection gets worse and down a frame at a time after ten seconds in which it
+  could have, since a steady delay is easier to play with than one that keeps changing; `session.log` names each
+  change. `MP_NETPLAY_LATENCY_MS` (`session.cpp`) holds back each packet a copy sends, to test this on one computer.
 - Every copy plays from the host's save: the host's hello carries it, and a guest writes it to `saves/netplay` and
   plays from there, its own save untouched.
 

@@ -7,7 +7,7 @@
 #
 # Usage: tools/netplay_session_test.sh <build dir> <ROM> <out dir> [frames, default 5400 (3 minutes)]
 #
-# NETPLAY_TEST_PLAYERS is how many play (2 to 4, default 2). MP_NETPLAY_DELAY (default 3) and MP_NETPLAY_DROP (a share of packets each copy drops, in percent; default 0) are
+# NETPLAY_TEST_PLAYERS is how many play (2 to 4, default 2). MP_NETPLAY_DELAY (a fixed delay; unset, the host chooses it as a session does) and MP_NETPLAY_DROP (a share of packets each copy drops, in percent; default 0) are
 # passed on; MP_NETPLAY_MINIGAMES as in the replay test. NETPLAY_TEST_GUEST_SAVE names a save the other players start
 # with, where player 1 starts with none. NETPLAY_TEST_GUEST_ENV adds variables to the guests' (MP_NETPLAY_TEST_POKE to
 # make a desync, for one): each guest plays from the host's save, so the session matches all the same.
@@ -81,7 +81,7 @@ run() {
         cp "$NETPLAY_TEST_GUEST_SAVE" "$dir/saves/marioparty.n64.us.1.0.bin"
     fi
     (cd "$dir" && exec env MP_NETPLAY_NO_MESSAGES=1 MP_NETPLAY_MINIGAMES="$minigames" MP_NETPLAY_FRAMES="$frames" \
-        MP_NETPLAY_DELAY="${MP_NETPLAY_DELAY:-3}" MP_NETPLAY_DROP="${MP_NETPLAY_DROP:-0}" "$@" \
+        ${MP_NETPLAY_DELAY:+MP_NETPLAY_DELAY="$MP_NETPLAY_DELAY"} MP_NETPLAY_DROP="${MP_NETPLAY_DROP:-0}" "$@" \
         "$build/MarioPartyRecompiled" --boot --window 640x480) > "$out/$name.log" 2>&1 < /dev/null &
 }
 
