@@ -113,6 +113,11 @@ set(RECOMPINPUT_PADS_IN_ORDER ON)
 # to the window's, between frames at 4:3. RT64_SCISSOR_INSIDE_FRAMEBUFFER, on with Emscripten and here too, counts it
 # only to the frame's edges.
 set(RT64_SCISSOR_INSIDE_FRAMEBUFFER ON)
+# A texrect the game moves is paired with its own in the game frame before and drawn between where it stood and where
+# it is in the frames between, as with Emscripten (RT64_INTERPOLATE_RECT_SCROLLS): without it the glove that points
+# at a choice in Mushroom Village's houses, one 24-pixel rect, slid to its place a game frame at a time, 30 steps a
+# second, while the room turned to it at the display's rate.
+set(RT64_INTERPOLATE_RECT_SCROLLS ON)
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/rt64 ${CMAKE_BINARY_DIR}/rt64)
 
 set(BUILD_SHARED_LIBS OFF)
