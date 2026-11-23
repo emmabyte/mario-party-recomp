@@ -7,6 +7,10 @@
 
 #include "ultramodern/input.hpp"
 
+namespace netplay {
+    struct SessionSettings;
+}
+
 namespace mp_netplay {
     // Reads the session from the environment (core/netplay_core.cpp lists the variables) and keeps the input callbacks
     // the runtime is given. version is the build's, for the handshake.
@@ -20,9 +24,14 @@ namespace mp_netplay {
     void add_settings_tab();
     // Whether netplay is built in (the MP_NETPLAY CMake option): the launcher shows Online Play only then.
     bool available();
-    // Opens the Online tab from the launcher; start starts the game, as the launcher's Start Game does, for the tab's
-    // Start Online Game button.
-    void open_settings_tab(std::function<void()> start);
+    // Opens the Online tab from the launcher. For the tab's Start Online Game button: can_start says whether the game
+    // can start (a ROM is loaded; it tells the player if not), and start starts it, as the launcher's Start Game does,
+    // once the lobby is ready.
+    void open_settings_tab(std::function<bool()> can_start, std::function<void()> start);
+    // lobby_view.cpp: the lobby, from Start Online Game, until the session starts (start_game) or the player leaves it
+    // (back). Returns false, telling the player why, if the session couldn't open.
+    bool open_lobby(const netplay::SessionSettings& settings, std::function<void()> start_game,
+                    std::function<void()> back);
     bool start_from_settings();
     // At the game's entry (start): the Online tab leaves its Start Online Game button out from then on.
     void note_game_started();

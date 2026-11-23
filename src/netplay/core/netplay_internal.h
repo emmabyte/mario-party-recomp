@@ -32,6 +32,11 @@ namespace netplay::detail {
     bool open_session(const SessionSettings& settings);
     Frame session_frame(uint64_t hash);
     void start_session();
+    // The lobby (netplay_core.h's lobby_open): opens the session and runs its handshake on a thread of its own. Returns
+    // false, with the status saying why, if the session couldn't open. lobby_end closes it (play false: Back) or, once
+    // it is Ready, ends its thread for the game to play the session.
+    bool lobby_begin(const SessionSettings& settings);
+    void lobby_end(bool play);
 
     // netplay_core.cpp: a session's record, in Game's data_folder: sessions/<time>-p<player>/ with inputs.mpnp and its
     // .hash (a recording MP_NETPLAY_REPLAY plays, with host.save as the save), and session.log, the session's lines.

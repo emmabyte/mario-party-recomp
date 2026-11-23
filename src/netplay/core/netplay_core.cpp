@@ -434,6 +434,26 @@ bool netplay::set_session(const SessionSettings& settings) {
     return detail::current_mode == Mode::Session;
 }
 
+bool netplay::lobby_open(const SessionSettings& settings) {
+    if (detail::current_mode != Mode::Off) {
+        return false;
+    }
+    return detail::lobby_begin(settings);
+}
+
+void netplay::lobby_close() {
+    detail::lobby_end(false);
+}
+
+bool netplay::lobby_play() {
+    if (detail::current_mode != Mode::Off || lobby_status().phase != LobbyStatus::Ready) {
+        return false;
+    }
+    detail::lobby_end(true);
+    detail::current_mode = Mode::Session;
+    return true;
+}
+
 void netplay::start() {
     if (detail::current_mode == Mode::Session) {
         detail::start_session();

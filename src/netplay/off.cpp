@@ -10,7 +10,7 @@ void mp_netplay::start() {}
 bool mp_netplay::active() { return false; }
 void mp_netplay::add_settings_tab() {}
 bool mp_netplay::available() { return false; }
-void mp_netplay::open_settings_tab(std::function<void()>) {}
+void mp_netplay::open_settings_tab(std::function<bool()>, std::function<void()>) {}
 bool mp_netplay::start_from_settings() { return false; }
 void mp_netplay::note_game_started() {}
 bool netplay::connected_override(int, bool*) { return false; }

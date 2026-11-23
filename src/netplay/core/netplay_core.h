@@ -100,6 +100,27 @@ namespace netplay {
     // mode runs.
     bool set_session(const SessionSettings& settings);
 
+    // A lobby, from a launcher, before the game starts: the session opens and its handshake runs on a thread of its
+    // own while the players gather, so the launcher can show who is there. The host's player starts it (lobby_start)
+    // with however many have joined; a guest's lobby is ready once its host has started. Then lobby_play makes it the
+    // session start() starts, and the launcher starts the game; or lobby_close (Back) leaves it, telling the others.
+    struct LobbyStatus {
+        enum Phase { Waiting, Ready, Failed, Closed };
+        Phase phase = Waiting;
+        bool host = false;
+        int player = -1;                  // this copy's, from 0; -1 until a guest's host has given it one
+        std::vector<std::string> players; // by player: the host's player sees each guest's address
+        std::string said;                 // the session's lines so far
+        std::string reason;               // Failed: the lines that say why
+    };
+    // Returns false if another mode runs, or the session couldn't open (the status says why).
+    bool lobby_open(const SessionSettings& settings);
+    LobbyStatus lobby_status();
+    void lobby_start();
+    void lobby_close();
+    // Once the status is Ready. Returns false before.
+    bool lobby_play();
+
     // Before the game starts (before it reads its save): a session's handshake, which waits for every player, and the
     // host's save for a guest (Game's use_save). Does nothing but in a session. Without it, the handshake comes at the
     // first frame, and a guest plays from its own save.

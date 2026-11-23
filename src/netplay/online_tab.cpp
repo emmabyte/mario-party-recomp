@@ -4,8 +4,8 @@
 // (core/netplay_core.cpp's variables, for the tests).
 //
 // The tab is RecompFrontend's options page with a footer of its own: its Start Online Game button saves the options,
-// closes the settings and starts the game as the launcher's Start Game does (the function main.cpp gives
-// open_settings_tab). Its Config is kept here rather than by create_config_tab, which has no way to add the button,
+// closes the settings and opens the lobby (lobby_view.cpp), where the players gather; the lobby starts the game, as the
+// launcher's Start Game does, with the function main.cpp gives open_settings_tab, once the host starts it. Its Config is kept here rather than by create_config_tab, which has no way to add the button,
 // so this file loads it (add_settings_tab) and saves it when the tab closes. Once the game has started the button is
 // left out: a session starts only with the game.
 //
@@ -43,6 +43,7 @@ namespace {
     };
     const std::string tab_id = "online";
     std::unique_ptr<recomp::config::Config> online;
+    std::function<bool()> can_start;
     std::function<void()> start_game;
     std::atomic<bool> game_started = false;
 
@@ -56,6 +57,28 @@ namespace {
 }
 
 namespace {
+    // The session the options say, if they say one (Host, or Join with an address).
+    bool settings_from_options(netplay::SessionSettings& s) {
+        if (online == nullptr) {
+            return false;
+        }
+        switch (static_cast<Online>(enum_value("mode"))) {
+        case Online::Host:
+            s.host = true;
+            s.players = int(number_value("players"));
+            s.port = uint16_t(std::clamp(atoi(std::get<std::string>(online->get_option_value("port")).c_str()), 1, 65535));
+            if (s.port == 1) {
+                s.port = 7845; // not a number
+            }
+            return true;
+        case Online::Join:
+            s.peer = std::get<std::string>(online->get_option_value("address"));
+            return !s.peer.empty();
+        default:
+            return false;
+        }
+    }
+
     void tell(const std::string& text) {
         recompui::open_info_prompt("Online Play", text, "OK", []() {}, recompui::ButtonStyle::Primary);
     }
@@ -66,21 +89,24 @@ namespace {
             tell("The game has already started. Online play starts with the game: start it again from the launcher.");
             return;
         }
-        switch (static_cast<Online>(enum_value("mode"))) {
-        case Online::Host:
-            break;
-        case Online::Join:
-            if (std::get<std::string>(online->get_option_value("address")).empty()) {
+        netplay::SessionSettings s;
+        if (!settings_from_options(s)) {
+            if (static_cast<Online>(enum_value("mode")) == Online::Join) {
                 tell("Type the host's address in Host's Address first.");
-                return;
+            } else {
+                tell("Set Online Play to Host or Join first.");
             }
-            break;
-        default:
-            tell("Set Online Play to Host or Join first.");
             return;
         }
         online->save_config();
-        start_game();
+        if (!can_start()) {
+            return;
+        }
+        recompui::config::close();
+        mp_netplay::open_lobby(s, start_game, []() {
+            recompui::config::set_tab(tab_id);
+            recompui::config::open();
+        });
     }
 }
 
@@ -105,7 +131,7 @@ void mp_netplay::add_settings_tab() {
         "Players",
         "Hosting: how many people play, you included. Each plays their own character with their own controller; "
         "the game's own player setup chooses who the computer plays for the rest.",
-        2, 4, 1, 0, false, 2
+        2, 4, 1, 0, false, 2, true // hidden: the lobby's Start says how many play; this is for Start Game alone
     );
     online->add_string_option(
         "address",
@@ -121,6 +147,9 @@ void mp_netplay::add_settings_tab() {
         "a VPN, forward it on your router to this computer.",
         "7845"
     );
+    // Only what the mode needs: the address to join, the port to host on.
+    online->add_option_hidden_dependency("address", "mode", Online::Off, Online::Host);
+    online->add_option_hidden_dependency("port", "mode", Online::Off, Online::Join);
     online->load_config();
 
     recompui::config::create_tab(
@@ -151,34 +180,14 @@ void mp_netplay::note_game_started() {
     game_started = true;
 }
 
-void mp_netplay::open_settings_tab(std::function<void()> start) {
+void mp_netplay::open_settings_tab(std::function<bool()> can, std::function<void()> start) {
+    can_start = std::move(can);
     start_game = std::move(start);
     recompui::config::set_tab(tab_id);
     recompui::config::open();
 }
 
 bool mp_netplay::start_from_settings() {
-    if (online == nullptr) {
-        return false;
-    }
     netplay::SessionSettings s;
-    switch (static_cast<Online>(enum_value("mode"))) {
-    case Online::Host:
-        s.host = true;
-        s.players = int(number_value("players"));
-        s.port = uint16_t(std::clamp(atoi(std::get<std::string>(online->get_option_value("port")).c_str()), 1, 65535));
-        if (s.port == 1) {
-            s.port = 7845; // not a number
-        }
-        break;
-    case Online::Join:
-        s.peer = std::get<std::string>(online->get_option_value("address"));
-        if (s.peer.empty()) {
-            return false;
-        }
-        break;
-    default:
-        return false;
-    }
-    return netplay::set_session(s);
+    return settings_from_options(s) && netplay::set_session(s);
 }

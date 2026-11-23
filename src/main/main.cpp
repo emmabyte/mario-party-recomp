@@ -63,7 +63,7 @@
 #include "window_icon_bmp.h"
 #endif
 
-const std::string version_string = "0.2.14-netplay-alpha.3";
+const std::string version_string = "0.2.14-netplay-alpha.4";
 
 template<typename... Ts>
 void exit_error(const char* str, Ts ...args) {
@@ -482,9 +482,10 @@ void on_launcher_init(recompui::LauncherMenu* menu) {
                 if (!recomp::is_rom_valid(game_id)) {
                     recompui::open_info_prompt("Online Play", "Load your Mario Party ROM first, with Load ROM in the "
                         "launcher.", "OK", []() {}, recompui::ButtonStyle::Primary);
-                    return;
+                    return false;
                 }
-                recompui::config::close();
+                return true;
+            }, [game_id]() {
                 recomp::start_game(game_id, {});
                 recompui::hide_all_contexts();
             });

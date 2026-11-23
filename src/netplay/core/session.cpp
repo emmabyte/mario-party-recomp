@@ -15,6 +15,13 @@
 // of its own (Game's save and use_save), since a different save plays differently. netplay::start runs the handshake
 // before the game starts, so a guest has the host's save before the game reads it.
 //
+// From the launcher (lobby_open, netplay_core.h) the handshake runs before the game starts instead, on a thread of its
+// own, as a lobby: the host takes guests as they come (up to four players in all) and says how many play only when its
+// player presses Start, which ends the lobby; until then its hellos say 0 players, a guest that goes quiet or says
+// goodbye (KIND_BYE) leaves the lobby and the guests after it move up a player, and a guest whose copy differs is turned
+// away. A lobby that ends early (the host closed it, a copy differs, the host never answered) doesn't end the program
+// as a session does: the lobby's status says why, for the launcher to show.
+//
 // Then the packets, each frame and again every 16 ms while a frame waits. A guest's to the host: its inputs from the
 // first frame the host hasn't acknowledged, the first whole frame it still needs, and the hashes of the game state it
 // made for its last frames. The host's to each guest: the whole frames from the first that guest still needs, the
@@ -35,6 +42,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -49,6 +57,7 @@ namespace {
     constexpr uint8_t KIND_HELLO = 0;
     constexpr uint8_t KIND_INPUTS = 1; // a guest's to the host
     constexpr uint8_t KIND_FRAMES = 2; // the host's to a guest
+    constexpr uint8_t KIND_BYE = 3;    // a copy leaving the lobby
     constexpr int MAX_SEND = 24;
     constexpr int HASHES_SENT = 4;
     constexpr size_t MAX_IDENTITY = 800;
@@ -69,6 +78,21 @@ namespace {
 
     std::string identity;
     bool handshaken = false;
+    bool save_used = false;      // a guest has played from the host's save (start_session)
+    bool record_opened = false;  // the session's record (at the first frame, after a lobby)
+
+    // The lobby (lobby_open): the handshake on a thread of its own, before the game starts.
+    struct LobbyEnded {
+        int code;
+    };
+    bool in_lobby = false;       // the lobby's thread runs the handshake: end_session throws LobbyEnded
+    bool lobby_started = false;  // the host's player pressed Start: how many play is settled
+    std::atomic<bool> lobby_start_wanted{ false };
+    std::atomic<bool> lobby_cancel{ false };
+    std::thread lobby_thread;
+    std::mutex status_mutex;
+    LobbyStatus status;          // under status_mutex
+    size_t reason_from = 0;      // where in said the lines of the lobby's last step begin: why it failed, if it did
     int jitter_ms = 0; // MP_NETPLAY_JITTER_MS: a stall of up to this long before one frame in four, for the tests
 
     std::vector<Inputs> local_inputs;   // by frame
@@ -96,6 +120,7 @@ namespace {
     };
 
     int slot_for(const udp::Endpoint& from);
+    void drop_guest(int p);
 
     uint64_t clock_us() {
         return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count()) | 1;
@@ -152,6 +177,9 @@ namespace {
     // or never came, 4 when the copies differ, 5 when the session
     // couldn't start (no such host, a port in use). Any but 0 shows the player what the session said first.
     [[noreturn]] void end_session(int code) {
+        if (in_lobby) {
+            throw LobbyEnded{ code }; // the lobby's thread says why and goes back to the launcher
+        }
         fflush(stderr);
         close_session_record();
         if (code != 0 && game.show_message != nullptr) {
@@ -193,8 +221,9 @@ namespace {
         Writer w;
         header(w, KIND_HELLO);
         // Whether this copy has the other's identity (a guest: and the host's delay), so it may start.
-        w.u8(to.identity_ok && (hosting || delay_known) ? 1 : 0);
-        w.u8(uint8_t(players));
+        w.u8(to.identity_ok && (hosting || (delay_known && players > 0)) ? 1 : 0);
+        // How many play: 0 from a host whose lobby is still open.
+        w.u8(uint8_t(hosting && in_lobby && !lobby_started ? 0 : players));
         size_t n = std::min(identity.size(), MAX_IDENTITY);
         w.u16(uint16_t(n));
         for (size_t i = 0; i < n; i++) {
@@ -321,6 +350,10 @@ namespace {
         for (int i = 0; i < 10; i++) {
             send_hello(from); // so the other copy can say what differs too
         }
+        if (hosting && in_lobby) {
+            drop_guest(who); // the lobby stays open for the others
+            return;
+        }
         end_session(4);
     }
 
@@ -429,7 +462,27 @@ namespace {
         }
         uint8_t kind = r.u8();
         int who = r.u8();
-        if (hosting && r.ok && who == UNASSIGNED && kind == KIND_HELLO) {
+        if (hosting && r.ok && kind == KIND_BYE) {
+            if (!handshaken) {
+                for (int p = 1; p < players; p++) {
+                    if (remotes[p].known && remotes[p].endpoint == from_endpoint) {
+                        say("[netplay] player %d left\n", p + 1);
+                        drop_guest(p);
+                        break;
+                    }
+                }
+            }
+            return true;
+        }
+        if (!hosting && r.ok && kind == KIND_BYE) {
+            if (from_endpoint == remotes[0].endpoint && !handshaken) {
+                say("[netplay] the host closed the lobby\n");
+                end_session(3);
+            }
+            return true;
+        }
+        if (hosting && r.ok && kind == KIND_HELLO && (who == UNASSIGNED || !handshaken)) {
+            // Before the session starts a guest is the player its address has (the guests move up when one leaves).
             who = slot_for(from_endpoint);
             if (who < 0) {
                 return false; // the session is full
@@ -475,14 +528,17 @@ namespace {
             if (!r.ok) {
                 return true;
             }
-            if (!hosting && player < 0) {
-                // The host's first hello: this copy's player, and how many play.
-                if (slot < 1 || slot >= PORTS || their_players < 2 || their_players > PORTS) {
-                    return true;
+            if (!hosting && !handshaken) {
+                // The host's hellos: this copy's player (which moves up if one before it leaves the lobby), and how
+                // many play once the host has said (0 while its lobby is open).
+                if (slot >= 1 && slot < PORTS && slot != player) {
+                    player = slot;
+                    say("[netplay] the host has made this copy player %d\n", player + 1);
                 }
-                player = slot;
-                players = their_players;
-                say("[netplay] the host has made this copy player %d of %d\n", player + 1, players);
+                if (players == 0 && their_players >= 2 && their_players <= PORTS && player > 0 && player < their_players) {
+                    players = their_players;
+                    say("[netplay] the session is of %d players\n", players);
+                }
             }
             if (their_players != players && their_players != 0) {
                 // The ports with a controller are the session's from power-on, before the handshake: every copy must
@@ -531,7 +587,10 @@ namespace {
 
     bool everyone_ready() {
         if (!hosting) {
-            return remotes[0].identity_ok && remotes[0].saw_ours && delay_known;
+            return remotes[0].identity_ok && remotes[0].saw_ours && delay_known && players > 0;
+        }
+        if (in_lobby && !lobby_started) {
+            return false;
         }
         for (int p = 1; p < players; p++) {
             if (!remotes[p].identity_ok || !remotes[p].saw_ours) {
@@ -559,12 +618,24 @@ namespace {
                 return p;
             }
         }
+        if (in_lobby && lobby_started) {
+            return -1; // the host has started: no one else joins
+        }
         for (int p = 1; p < players; p++) {
             if (!remotes[p].known) {
                 return p;
             }
         }
         return -1;
+    }
+
+    // On the host, in its lobby: a guest gone, and the guests after it each a player up, so the players stay one to
+    // however many there are.
+    void drop_guest(int p) {
+        for (int q = p; q + 1 < PORTS; q++) {
+            remotes[q] = remotes[q + 1];
+        }
+        remotes[PORTS - 1] = Remote{};
     }
 
     // On the host, once every guest has answered a few hellos: the delay, from the longest round trip. A guest's
@@ -618,7 +689,7 @@ namespace {
         whole_have.assign(size_t(delay), 1);
     }
 
-    void handshake() {
+    void prepare_handshake() {
         identity = game.identity != nullptr ? game.identity() : std::string();
         if (hosting && game.save != nullptr) {
             host_save = game.save();
@@ -627,6 +698,20 @@ namespace {
                 end_session(5);
             }
         }
+    }
+
+    void finish_handshake() {
+        // A last few, so the others know this copy has theirs even if one is lost.
+        for (int i = 0; i < 3; i++) {
+            hello_everyone();
+        }
+        prepare_buffers();
+        handshaken = true;
+        say("[netplay] every copy matches: the session starts with %d players\n", players);
+    }
+
+    void handshake() {
+        prepare_handshake();
         if (hosting) {
             say("[netplay] waiting for %d players to join\n", players - 1);
         } else {
@@ -649,14 +734,113 @@ namespace {
                 choose_delay();
             }
         }
-        // A last few, so the others know this copy has theirs even if one is lost.
-        for (int i = 0; i < 3; i++) {
-            hello_everyone();
+        finish_handshake();
+    }
+
+    void set_status(LobbyStatus::Phase phase) {
+        std::lock_guard lock{ status_mutex };
+        status.phase = phase;
+        status.host = hosting;
+        status.player = player;
+        status.players.clear();
+        if (hosting) {
+            status.players.push_back("you");
+            for (int p = 1; p < PORTS; p++) {
+                if (remotes[p].known) {
+                    status.players.push_back(remotes[p].endpoint.text());
+                }
+            }
+        } else if (player > 0) {
+            for (int p = 0; p <= player; p++) {
+                status.players.push_back(p == 0 ? "the host" : p == player ? "you" : "");
+            }
         }
-        prepare_buffers();
-        handshaken = true;
-        open_session_record(player, host_save, said);
-        say("[netplay] every copy matches: the session starts with %d players\n", players);
+        status.said = said;
+        status.reason = phase == LobbyStatus::Failed ? said.substr(std::min(reason_from, said.size())) : std::string();
+    }
+
+    // The lobby's thread: the handshake, with the guests as they come, until the host's player presses Start (or a
+    // guest's host does), or the lobby closes.
+    void run_lobby() {
+        try {
+            prepare_handshake();
+            say(hosting ? "[netplay] the lobby is open\n" : "[netplay] waiting for the host\n");
+            auto next_hello = Clock::now();
+            auto opened = Clock::now();
+            while (!everyone_ready()) {
+                reason_from = said.size();
+                if (lobby_cancel) {
+                    for (int i = 0; i < 5; i++) {
+                        Writer w;
+                        header(w, KIND_BYE);
+                        if (hosting) {
+                            for (int p = 1; p < PORTS; p++) {
+                                send(remotes[p], w);
+                            }
+                        } else {
+                            send(remotes[0], w);
+                        }
+                    }
+                    udp::close();
+                    set_status(LobbyStatus::Closed);
+                    return;
+                }
+                auto now = Clock::now();
+                if (hosting && lobby_start_wanted && !lobby_started) {
+                    int n = 1;
+                    while (n < PORTS && remotes[n].known) {
+                        n++;
+                    }
+                    if (n >= 2) {
+                        players = n;
+                        lobby_started = true;
+                        say("[netplay] starting with %d players\n", players);
+                    }
+                    lobby_start_wanted = false;
+                }
+                if (now >= next_hello) {
+                    if (hosting) {
+                        for (int p = 1; p < PORTS; p++) {
+                            send_hello(remotes[p]);
+                        }
+                    } else {
+                        send_hello(remotes[0]);
+                    }
+                    next_hello = now + std::chrono::milliseconds(50);
+                }
+                receive_packet(16);
+                if (hosting) {
+                    // A guest gone quiet has left (its game closed, its network went).
+                    for (int p = 1; p < PORTS; p++) {
+                        if (remotes[p].known && now - remotes[p].heard > std::chrono::seconds(4)) {
+                            say("[netplay] player %d stopped answering and left\n", p + 1);
+                            drop_guest(p);
+                            if (lobby_started && p < players) {
+                                end_session(3);
+                            }
+                        }
+                    }
+                    if (lobby_started && !delay_known) {
+                        choose_delay();
+                    }
+                } else {
+                    bool heard = player >= 0;
+                    auto silent = now - (heard ? remotes[0].heard : opened);
+                    if (silent > std::chrono::seconds(heard ? 6 : 20)) {
+                        say(heard ? "[netplay] the host stopped answering\n"
+                                  : "[netplay] the host never answered: check the address, and that the host's port "
+                                    "is open to you\n");
+                        end_session(3);
+                    }
+                }
+                set_status(LobbyStatus::Waiting);
+            }
+            finish_handshake();
+            set_status(LobbyStatus::Ready);
+        } catch (const LobbyEnded&) {
+            udp::close();
+            set_status(LobbyStatus::Failed);
+        }
     }
 
     // Whether the frame's inputs from everyone are here.
@@ -727,7 +911,9 @@ bool netplay::detail::open_session(const SessionSettings& settings) {
         say("[netplay] couldn't open UDP port %u: is another copy of the game using it?\n", unsigned(port));
         end_session(5);
     }
-    if (hosting) {
+    if (hosting && in_lobby) {
+        say("[netplay] hosting on UDP port %u\n", unsigned(port));
+    } else if (hosting) {
         say("[netplay] hosting a session of %d players on UDP port %u\n", players, unsigned(port));
     } else {
         say("[netplay] joining the session at %s\n", settings.peer.c_str());
@@ -738,6 +924,13 @@ bool netplay::detail::open_session(const SessionSettings& settings) {
 Frame netplay::detail::session_frame(uint64_t hash) {
     if (!handshaken) {
         handshake();
+    }
+    if (!record_opened) {
+        record_opened = true;
+        open_session_record(player, host_save, said);
+        for (Remote& r : remotes) {
+            r.heard = Clock::now(); // the time from the lobby to the game's first frame doesn't count as silence
+        }
     }
     if (session_frames >= 0 && int64_t(frame_no) >= session_frames) {
         // Stay until the others have this copy's part of every frame they play, then end.
@@ -802,11 +995,59 @@ Frame netplay::detail::session_frame(uint64_t hash) {
 }
 
 void netplay::detail::start_session() {
-    if (handshaken) {
-        return;
+    if (!handshaken) {
+        handshake();
     }
-    handshake();
-    if (!hosting && game.use_save != nullptr) {
+    if (!hosting && game.use_save != nullptr && !save_used) {
+        save_used = true;
         game.use_save(host_save);
     }
+}
+
+bool netplay::detail::lobby_begin(const SessionSettings& settings) {
+    // As new: a lobby may open again after one that closed.
+    for (Remote& r : remotes) {
+        r = Remote{};
+    }
+    said.clear();
+    host_save.clear();
+    handshaken = delay_known = lobby_started = save_used = record_opened = false;
+    lobby_start_wanted = lobby_cancel = false;
+    delay = 3;
+    in_lobby = true;
+    reason_from = 0;
+    try {
+        open_session(settings);
+    } catch (const LobbyEnded&) {
+        set_status(LobbyStatus::Failed);
+        return false;
+    }
+    if (hosting) {
+        players = PORTS; // the guests' places, until Start says how many play
+    }
+    set_status(LobbyStatus::Waiting);
+    lobby_thread = std::thread(run_lobby);
+    return true;
+}
+
+LobbyStatus netplay::lobby_status() {
+    std::lock_guard lock{ status_mutex };
+    return status;
+}
+
+void netplay::lobby_start() {
+    lobby_start_wanted = true;
+}
+
+void netplay::detail::lobby_end(bool play) {
+    if (!play) {
+        lobby_cancel = true;
+    }
+    if (lobby_thread.joinable()) {
+        lobby_thread.join();
+    }
+    if (!play) {
+        udp::close(); // a lobby that had finished (Ready) and was left all the same
+    }
+    in_lobby = false;
 }

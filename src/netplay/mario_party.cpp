@@ -321,10 +321,20 @@ namespace {
 }
 
 
+// The game's save file: the runtime's, or before the game has started (a lobby's handshake, from the launcher) where
+// the runtime will keep it, saves/<game id>.bin in the config folder.
+static std::filesystem::path save_file_path() {
+    std::filesystem::path path = ultramodern::get_save_file_path();
+    if (path.empty()) {
+        path = recomp::get_config_path() / "saves" / "marioparty.n64.us.1.0.bin";
+    }
+    return path;
+}
+
 // The save a session plays from: this copy's EEPROM as the runtime read it at the start (its save file, or none).
 static std::vector<uint8_t> host_save() {
     std::vector<uint8_t> save(SAVE_SIZE, 0);
-    std::ifstream file = recomp::open_input_file_with_backup(ultramodern::get_save_file_path(), std::ios_base::binary);
+    std::ifstream file = recomp::open_input_file_with_backup(save_file_path(), std::ios_base::binary);
     if (file.good()) {
         file.read(reinterpret_cast<char*>(save.data()), std::streamsize(save.size()));
     }
@@ -369,7 +379,7 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
     game.identity = identity;
     game.data_folder = []() {
         // Beside the saves folder (the program's own folder in portable mode): netplay/.
-        static std::string folder = (ultramodern::get_save_file_path().parent_path().parent_path() / "netplay").string();
+        static std::string folder = (save_file_path().parent_path().parent_path() / "netplay").string();
         return folder;
     };
     game.save = host_save;
