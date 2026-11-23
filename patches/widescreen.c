@@ -87,12 +87,12 @@ static const ShortScene short_scenes[] = {
     { 0x1E, 1.6f },  { 0x1F, 1.8f },  { 0x23, 1.6f },  { 0x24, 2.15f }, { 0x26, 1.55f }, { 0x2A, 1.7f },
 };
 
-// The scenes whose 3D below the console's overscan border shows what the console never drew there, by their overlay: the
-// engine keeps that border's bottom edge for them (camera_view.h's camera_view_border_bottom), so the 12 lines under
-// it stay black as on the console, the rest of the picture still out to the window's edges.
+// The scenes whose 3D in the screen's bottom lines shows what a TV's overscan hid, by their overlay: the engine cuts
+// their 3D at the console's overscan border's bottom edge (camera_view.h's camera_view_border_bottom), so the picture
+// behind it shows in the 12 lines under it, the rest of the 3D still out to the window's edges.
 // - 0x7B, Mini-Game Stadium's results after each minigame, and 0x80, its results at the end: the camera keeps the
-//   border every camera starts with (InitCameras), and each player's coins are a column of coins that rises out of
-//   the podium as they are counted. The column goes on down through the podium and out under it, and the podiums'
+//   whole screen every camera starts with (InitCameras), and each player's coins are a column of coins that rises out
+//   of the podium as they are counted. The column goes on down through the podium and out under it, and the podiums'
 //   feet are at the border's bottom edge, so under them the window showed the columns' lower ends.
 static const u8 overlays_border_bottom[] = { 0x7B, 0x80 };
 
