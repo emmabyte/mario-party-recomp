@@ -87,8 +87,18 @@ static const ShortScene short_scenes[] = {
     { 0x1E, 1.6f },  { 0x1F, 1.8f },  { 0x23, 1.6f },  { 0x24, 2.15f }, { 0x26, 1.55f }, { 0x2A, 1.7f },
 };
 
+// The scenes whose 3D below the console's overscan border shows what the console never drew there, by their overlay: the
+// engine keeps that border's bottom edge for them (camera_view.h's camera_view_border_bottom), so the 12 lines under
+// it stay black as on the console, the rest of the picture still out to the window's edges.
+// - 0x7B, Mini-Game Stadium's results after each minigame, and 0x80, its results at the end: the camera keeps the
+//   border every camera starts with (InitCameras), and each player's coins are a column of coins that rises out of
+//   the podium as they are counted. The column goes on down through the podium and out under it, and the podiums'
+//   feet are at the border's bottom edge, so under them the window showed the columns' lower ends.
+static const u8 overlays_border_bottom[] = { 0x7B, 0x80 };
+
 void widescreen_overlay(s32 overlay) {
     f32 widest = 0.0f;
+    s32 border_bottom;
     u32 i;
 
     for (i = 0; i < sizeof(overlays_4x3); i++) {
@@ -102,6 +112,13 @@ void widescreen_overlay(s32 overlay) {
         }
     }
     board_back_scene_widest(widest);
+    border_bottom = FALSE;
+    for (i = 0; i < sizeof(overlays_border_bottom); i++) {
+        if (overlays_border_bottom[i] == overlay) {
+            border_bottom = TRUE;
+        }
+    }
+    camera_view_border_bottom(border_bottom);
 }
 
 // The sprites the sprite manager has loaded, each's first frame's texels first.
