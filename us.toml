@@ -373,6 +373,16 @@ func = "func_800F87A0_PlatformPeril"
 before_vram = 0x800F8ACC
 text = "{ void widescreen_platform_parked(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; widescreen_platform_parked(rdram, ctx); *ctx = saved; }"
 
+# Bobsled Run's whole course in both views. The course is six section models, and each frame func_800FCB44 draws a
+# section in a view (its camera's byte for it, camera->unk_50[section]: 2 drawn, 1 not; and the model's camera mask)
+# only while that view's player is inside the section's stretch of the course (0 to 1 from start to finish: 0-1.7,
+# 0-0.05, 0-0.3, 0.25-0.72, 0.67-1.2, 0.8-1.2), so the cave and the walls past it came in all at once as a sled reached
+# 0.25 or 0.67, with the sky's dark blue where they were to be at the views' sides and top. Each section is taken as
+# inside for both players instead: the loop's test (v0, both bounds) is made true before it branches on it.
+[[patches.hook]]
+func = "func_800FCB44_BobsledRun"
+before_vram = 0x800FCC28
+text = "ctx->r2 = 1;"
 # A board's characters and props hidden once off the screen (patches/widescreen.c, widescreen_board_shown): in
 # func_8003DE60, after func_8004B730 has written the one's place on the screen at sp + 0x10, before the test loads its X.
 # The game's registers are kept around the call.
