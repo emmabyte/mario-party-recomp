@@ -172,10 +172,63 @@ f32 mp_aspect_ratio(void);
 // its x scale), and the camera aims up to 300 units behind it, so at 4:3 its left end is just past the picture's edge
 // and a wider one showed black beside it, below the jungle. us.toml's hook calls this each frame before the game
 // reads the ground's x scale: the ground as many times wider as the picture is than 4:3, which reaches as far past
-// each side as the wider view does (its texture stretched as much, and still moving with the track), and the game's
-// own scale of 1 at 4:3.
+// each side as the wider view does (its texture stretched as much), and the game's own scale of 1 at 4:3.
 void widescreen_piranhas_ground(omObjData* ground) {
     ground->scale.x = mp_aspect_ratio() * (3.0f / 4.0f);
+}
+
+// The game slides that texture by writing new texture coordinates into the ground's vertices each frame
+// (func_80027C1C), which the renderer's in-between frames cannot carry on, so at a display rate above the game's 30
+// the track and the grass behind the ferns stepped at 30 a second while the trees, the ferns and the players on
+// them, moved by their matrices, glided. Instead the texture is left where the model has it (us.toml's hook zeroes
+// the slide) and the ground is moved: three pieces, the game's own and two copies of it, each its own width apart,
+// placed where the game's slid texture stands, which is the scroll times 1 less a texel's 3300 * 32 / 4095 units
+// over 24 (the texture moves a little behind the scroll), so the track looks as it did on every frame the game
+// draws. The pieces are at that place plus a whole number of widths, the one behind the scroll, the one under it and
+// the one ahead; piece n always the same of the three (n modulo 3), so when the scroll passes half a width only the
+// one left behind moves, three widths on to the front. Its texture repeats every half width, so in the one frame
+// the renderer draws it halfway there, one and a half widths on, it lies on the others with the same texture. The
+// game's own piece is placed through the object, whose position the game gives the model after this (and takes
+// back from the scroll at the next frame's start); us.toml's hook calls this as the frame function returns. The
+// copies are made with the trees' (widescreen_piranhas_trees_copied).
+#define PIRANHAS_GROUND_WIDTH 3300.0f
+#define PIRANHAS_GROUND_TEXEL (3300.0f * 32.0f / 4095.0f)
+#define PIRANHAS_GROUND_SLIDE 24.0f
+
+static s16 piranhas_ground_copies[2];
+
+void widescreen_piranhas_ground_placed(omObjData* ground) {
+    unk_ovl_2D_struct* own = &D_800F2B7C[ground->model[0]];
+    f32 width = PIRANHAS_GROUND_WIDTH * ground->scale.x;
+    f32 scroll = ground->trans.x;
+    f32 texture = scroll * (1.0f - PIRANHAS_GROUND_TEXEL / PIRANHAS_GROUND_SLIDE);
+    f32 under = (scroll - texture) / width;
+    s32 nearest = (s32) (under < 0.0f ? under - 0.5f : under + 0.5f);
+    s32 n;
+
+    for (n = nearest - 1; n <= nearest + 1; n++) {
+        s32 piece = ((n % 3) + 3) % 3;
+        f32 x = texture + width * n;
+        unk_ovl_2D_struct* copy;
+
+        if (piece == 0) {
+            ground->trans.x = x;
+            continue;
+        }
+        if (piranhas_ground_copies[piece - 1] < 0) {
+            continue;
+        }
+        copy = &D_800F2B7C[piranhas_ground_copies[piece - 1]];
+        copy->unk_24 = x;
+        copy->unk_28 = own->unk_28;
+        copy->unk_2C = own->unk_2C;
+        copy->unk_30 = own->unk_30;
+        copy->unk_34 = own->unk_34;
+        copy->unk_38 = own->unk_38;
+        copy->unk_3C = ground->scale.x;
+        copy->unk_40 = own->unk_40;
+        copy->unk_44 = own->unk_44;
+    }
 }
 
 // Its 14 trees and bushes along the back of the track, forms 1 to 14 of the same object, which the game keeps within
@@ -185,7 +238,8 @@ void widescreen_piranhas_ground(omObjData* ground) {
 // beyond it. A copy of each a ring's width to its left and one to its right, placed each frame where the game's own one
 // is, carries them on as they repeat, to the scroll plus or minus 4500, past a 32:9 picture's edges. us.toml's hooks
 // call these once the setup (func_800FA878_PiranhasPursuit) has made the 14, and after the frame's loop has moved them.
-// At 4:3 the copies are out of the view. They take 28 of the game's 128 forms, of which the minigame uses 92.
+// At 4:3 the copies are out of the view. They and the ground's two take 30 of the game's 128 forms, of which the
+// minigame uses 92.
 #define PIRANHAS_TREES 14
 #define PIRANHAS_RING 3000.0f
 
@@ -199,6 +253,9 @@ void widescreen_piranhas_trees_copied(omObjData* object) {
         for (side = 0; side < 2; side++) {
             piranhas_copies[i][side] = func_80023FC8(object->model[1 + i]);
         }
+    }
+    for (side = 0; side < 2; side++) {
+        piranhas_ground_copies[side] = func_80023FC8(object->model[0]);
     }
 }
 
