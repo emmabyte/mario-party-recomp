@@ -100,6 +100,26 @@ func = "GMesFontCreate"
 before_vram = 0x80076864
 text = "{ void mp_hud_message_group(uint8_t*, gpr, int32_t); mp_hud_message_group(rdram, (gpr)(int32_t)MEM_W((int16_t)ctx->r2 * 4, (gpr)(int32_t)0x800EE330), 0xC); }"
 
+# A minigame's corner HUD at the window's sides (lib/mario-party-engine/src/hud.cpp says how): Grab Bag, Crane Game and
+# Bash 'n' Cash each make their four players' names, coin icons and coins' digits as basic sprites at 4:3's corners, at
+# the end of the function that makes them (after its last call, before it restores ra), and keep their indexes, s16s,
+# in one run of 20: the twelve digits (three a player), then the four names, then the four coin icons. The basic
+# sprites are at the pointer at 0x800ED60C.
+[[patches.hook]]
+func = "func_800FA8F4_GrabBag"
+before_vram = 0x800FABE8
+text = "{ void mp_hud_side_sprites(uint8_t*, gpr, int32_t, gpr, gpr, int32_t); mp_hud_side_sprites(rdram, (gpr)(int32_t)0x800FB258, 20, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800ED60C), (gpr)(int32_t)0x800EE330, 0xC); }"
+
+[[patches.hook]]
+func = "func_800FB08C_CraneGame"
+before_vram = 0x800FB384
+text = "{ void mp_hud_side_sprites(uint8_t*, gpr, int32_t, gpr, gpr, int32_t); mp_hud_side_sprites(rdram, (gpr)(int32_t)0x800FFE90, 20, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800ED60C), (gpr)(int32_t)0x800EE330, 0xC); }"
+
+[[patches.hook]]
+func = "func_800FDBB4_BashNCash"
+before_vram = 0x800FDEAC
+text = "{ void mp_hud_side_sprites(uint8_t*, gpr, int32_t, gpr, gpr, int32_t); mp_hud_side_sprites(rdram, (gpr)(int32_t)0x800FE5D8, 20, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800ED60C), (gpr)(int32_t)0x800EE330, 0xC); }"
+
 # A screen wipe past 4:3 (lib/mario-party-engine/src/wipe.cpp says how): the wipe module's whole-screen rectangle
 # (func_800728F4(gfx, alpha), out through 0x800729C0), and a shape wipe (func_8007420C, with gfx in t0): its draws
 # (from 0x80074250, past its whole-screen rectangle for a closed shape, to its end at 0x80074C14) and its rectangles
