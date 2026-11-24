@@ -1,6 +1,6 @@
 // The launcher's Online Play: three screens over the launcher, in RecompFrontend's own look (its theme, buttons and
 // labels), laid out as the project's design for them has them.
-// - Online Play: the player's name, then Host a Party, Resume Last Party (when this copy saved one), Join a Party and
+// - Online Play: the player's name, then Host a Party, Resume Party (when this copy saved one), Join a Party and
 //   Back.
 // - Join a Party: the host's address, Connect! and Back, and how connecting goes.
 // - The party: a place for each of four players (its number, an initial, the name, HOST and YOU, the round trip to the
@@ -298,7 +298,7 @@ namespace {
             name_input->add_text_changed_callback([](const std::string& text) { set_option("name", trimmed(text)); });
             host_button = menu_button(context, menu, "Host a Party", "Open a lobby", ButtonStyle::Primary);
             host_button->add_pressed_callback([this]() { host(false); });
-            resume_button = menu_button(context, menu, "Resume Last Party", "Everyone from it joins again",
+            resume_button = menu_button(context, menu, "Resume Party", "Pick up where you left off",
                                         ButtonStyle::Primary);
             resume_button->add_pressed_callback([this]() { host(true); });
             Button* join_button = menu_button(context, menu, "Join a Party", "Enter the host's address",
@@ -513,7 +513,7 @@ namespace {
                                                                          : addresses));
                 if (s.resuming) {
                     note->set_text_unsafe("<b>Resuming your last party</b> where its last scene started. Everyone who "
-                                          "played in it joins again, in the same order as last time, and the game picks up from there.");
+                                          "played in it joins again, each as the player they were, and the game picks up from there.");
                 } else {
                     note->set_text_unsafe("<b>Characters and party rules are picked in-game.</b> Once everyone's "
                                           "ready, start the game and the usual setup screens take over.");
