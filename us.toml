@@ -361,3 +361,21 @@ text = "{ void mp_model_batch_start(uint8_t*); mp_model_batch_start(rdram); }"
 func = "func_8002E488"
 before_vram = 0x80030D1C
 text = "{ void mp_model_batch_end(uint8_t*); mp_model_batch_end(rdram); }"
+
+# Cast Aways' coins, bags and chests appear and vanish past the window's edges, not 4:3's (patches/cast_aways.c):
+# the item's frame function's bounds, in f0 as it compares the item's screen x in f2 (340 moving right, -20 moving
+# left), and a new item's x, once the spawner has set the item (s2) and its work (s3), before it counts it.
+[[patches.hook]]
+func = "func_800F7A38_CastAways"
+before_vram = 0x800F7E4C
+text = "{ void cast_aways_item_gone_right(uint8_t*, recomp_context*); recomp_context c = *ctx; cast_aways_item_gone_right(rdram, &c); ctx->f0.fl = c.f0.fl; }"
+
+[[patches.hook]]
+func = "func_800F7A38_CastAways"
+before_vram = 0x800F7E68
+text = "{ void cast_aways_item_gone_left(uint8_t*, recomp_context*); recomp_context c = *ctx; cast_aways_item_gone_left(rdram, &c); ctx->f0.fl = c.f0.fl; }"
+
+[[patches.hook]]
+func = "func_800F76B8_CastAways"
+before_vram = 0x800F79BC
+text = "{ void cast_aways_item_spawned(uint8_t*, recomp_context*); recomp_context c = *ctx; c.r4 = ctx->r18; c.r5 = ctx->r19; cast_aways_item_spawned(rdram, &c); }"
