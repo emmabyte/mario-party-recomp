@@ -35,8 +35,8 @@
 //   While netplay runs it gets two retraces at each frame's start, makes a fixed number of samples at each, and the
 //   frame waits for it (step_audio).
 // - A board's background loader's (src/48D90.c): the board waits for each piece it sends to be finished.
-// The game state the hash covers is RDRAM less what `excluded` and the live processes' stacks name, with the heaps'
-// free blocks zeroed first (state_ranges).
+// The game state the hash covers is RDRAM less what `excluded`, the live processes' stacks and the frames' display
+// lists name, with the heaps' free blocks zeroed first (state_ranges).
 //
 // The environment: netplay_core.cpp lists the core's variables. MP_NETPLAY_MINIGAMES is this file's, for the tests.
 
@@ -209,6 +209,23 @@ namespace {
         MEM_H(0, RING_COUNT) = SAMPLES;
         MEM_H(RING_WRITE_OFFSET, RING_READ) = (read + 1 + SAMPLES) % RING_ENTRIES;
     }
+    // The display lists the logic writes each frame (func_8002B4C0's, src/2C0C0.c: D_800F37DA buffers of D_800F50BA
+    // commands, at D_800F3720), which the game only draws and never reads back. A wipe (func_80073560) draws the frame
+    // before from the frame buffer the swap chain last chose, currFrameBuffer, which it chose on its own thread as real
+    // time passed, and puts its address in the display list.
+    std::vector<std::pair<uint32_t, uint32_t>> display_lists(uint8_t* rdram) {
+        std::vector<std::pair<uint32_t, uint32_t>> out;
+        uint32_t count = (uint8_t)MEM_BU(0, (int32_t)0x800F37DA);
+        uint32_t size = 8 * (uint32_t)(uint16_t)MEM_HU(0, (int32_t)0x800F50BA);
+        for (uint32_t i = 0; i < count && i < 8; i++) {
+            uint32_t dl = (uint32_t)MEM_W(0, (int32_t)(0x800F3720u + 4 * i));
+            if (dl >= 0x80000000u && dl + size <= 0x80000000u + RDRAM_SIZE && size != 0) {
+                out.push_back({ dl, dl + size });
+            }
+        }
+        return out;
+    }
+
     // The game state, for the hash: RDRAM less what `excluded` names and the stacks of the processes alive, with the
     // heaps' free blocks zeroed first.
     void state_ranges(uint8_t* rdram, std::vector<Range>& out) {
@@ -216,6 +233,9 @@ namespace {
         zero_free_blocks(rdram, TEMP_HEAP);
         std::vector<Range> left_out(std::begin(excluded), std::end(excluded));
         for (auto [lo, hi] : process_stacks(rdram)) {
+            left_out.push_back({ lo, hi });
+        }
+        for (auto [lo, hi] : display_lists(rdram)) {
             left_out.push_back({ lo, hi });
         }
         std::sort(left_out.begin(), left_out.end(), [](const Range& a, const Range& b) { return a.start < b.start; });

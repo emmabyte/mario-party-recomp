@@ -31,7 +31,8 @@
 // starts only once every player, its own too, is ready. A lobby that ends early (the host closed it, a copy differs, the host never answered) doesn't end the program
 // as a session does: the lobby's status says why, for the launcher to show.
 //
-// Then the packets, each frame and again every 16 ms while a frame waits. A guest's to the host: its inputs from the
+// Then the packets, each frame and again every 16 ms while a frame waits, taken in by a thread of the session's own as
+// they come: the host sends the guests a frame as soon as the last of its inputs comes, not at its own next frame. A guest's to the host: its inputs from the
 // first frame the host hasn't acknowledged, the first whole frame it still needs, and the hashes of the game state it
 // made for its last frames. The host's to each guest: the whole frames from the first that guest still needs, the
 // first of that guest's inputs it still needs, and its own last hashes. The host compares every guest's hashes with
@@ -239,6 +240,14 @@ namespace {
     std::mutex delayed_mutex;
     std::condition_variable delayed_cv;
     bool delayed_started = false;
+
+    // Once the session plays, a thread of its own takes in each packet as it comes (receive_thread), so that a whole
+    // frame goes on from the host, and reaches a guest's frame, without waiting for either's next frame. The session's
+    // state is under session_mutex; a frame that waits for its inputs waits on session_cv, which each packet wakes.
+    std::recursive_mutex session_mutex;
+    std::condition_variable_any session_cv;
+    uint32_t frames_sent_to = 0; // on the host: how far the whole frames it has sent at a packet's coming go
+    bool receiving = false;
 
     void send_delayed() {
         std::unique_lock lock{ delayed_mutex };
@@ -715,6 +724,10 @@ namespace {
     }
 
     // Takes in one packet, if one came within wait_ms. Returns whether one did.
+    bool handle_packet(const uint8_t* buf, size_t n, const udp::Endpoint& from_endpoint);
+
+    // A packet, if one comes within wait_ms, taken in under the session's lock. On the host, the whole frames it
+    // completes go to the guests at once, rather than at the host's next frame.
     bool receive_packet(int wait_ms) {
         uint8_t buf[1500];
         udp::Endpoint from_endpoint;
@@ -722,6 +735,17 @@ namespace {
         if (n == 0) {
             return false;
         }
+        std::lock_guard<std::recursive_mutex> lock(session_mutex);
+        bool taken = handle_packet(buf, n, from_endpoint);
+        if (taken && handshaken && hosting && wholes_ready() > frames_sent_to) {
+            frames_sent_to = wholes_ready();
+            send_frames();
+        }
+        session_cv.notify_all();
+        return taken;
+    }
+
+    bool handle_packet(const uint8_t* buf, size_t n, const udp::Endpoint& from_endpoint) {
         Reader r{ buf, n };
         if (r.u32() != SESSION_MAGIC || r.u32() != SESSION_VERSION) {
             return false;
@@ -1013,7 +1037,10 @@ namespace {
         int wanted = target_delay;
         if (need > target_delay) {
             wanted = need;
-        } else if (worst_wait > frame_ms && target_delay < 15) {
+        } else if (worst_wait > frame_ms && target_delay < std::min(need + 2, 15)) {
+            // Frames that wait though the delay covers the round trips: their inputs came late (jitter), which a frame
+            // more covers, or a copy is slower than the others (a scene it loads, a computer that can't keep up),
+            // which no delay helps; so no more than two frames past what the round trips need.
             wanted = target_delay + 1;
         }
         auto now = Clock::now();
@@ -1316,6 +1343,15 @@ Frame netplay::detail::session_frame(uint64_t hash) {
     if (!handshaken) {
         handshake();
     }
+    if (!receiving) {
+        receiving = true;
+        std::thread([] {
+            for (;;) {
+                receive_packet(50);
+            }
+        }).detach();
+    }
+    std::unique_lock<std::recursive_mutex> lock(session_mutex);
     if (!record_opened) {
         record_opened = true;
         open_session_record(player, host_save, said);
@@ -1355,11 +1391,14 @@ Frame netplay::detail::session_frame(uint64_t hash) {
     send_all();
     bool told = false;
     auto wait_start = Clock::now();
+    auto sent_at = wait_start;
     while (!frame_ready()) {
-        if (receive_packet(16)) {
+        session_cv.wait_for(lock, std::chrono::milliseconds(16));
+        if (frame_ready() || Clock::now() - sent_at < std::chrono::milliseconds(16)) {
             continue;
         }
         send_all();
+        sent_at = Clock::now();
         int who = 0;
         auto silent = Clock::now() - quietest(who).heard;
         if (!told && silent > std::chrono::seconds(1)) {

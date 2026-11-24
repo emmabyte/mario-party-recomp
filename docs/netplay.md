@@ -52,8 +52,10 @@ or a session.
   and a block allocated again starts with it.
 - The hash leaves out what the runtime and the game's system threads write as real time passes and the logic never
   reads back: threads and their stacks, the scheduler's and the swap chain's queues, the framebuffers' order, the
-  performance meter, the sound driver's data and heap, the Rumble Paks' state, and the stacks of the processes that are
-  alive, below where each sleeps being what was left there (`mario_party.cpp`'s `excluded` and `state_ranges`).
+  performance meter, the sound driver's data and heap, the Rumble Paks' state, the stacks of the processes that are
+  alive, below where each sleeps being what was left there, and the display lists the logic writes for each frame,
+  which the game only draws (a wipe puts in them the address of the frame buffer the swap chain chose as real time
+  passed) (`mario_party.cpp`'s `excluded` and `state_ranges`).
 - During a replay the ports with a controller are the recording's (`get_connected_device_info`, `src/main/main.cpp`).
 
 ## Playing a session
