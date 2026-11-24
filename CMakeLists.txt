@@ -143,6 +143,8 @@ else()
     # its own, and online play needs every computer's game to compute the same floats as an x86-64 one does (which
     # nehalem never fuses).
     target_compile_options(RecompiledFuncs PRIVATE -ffp-contract=off)
+    # The microcode's vector unit's SSE, on NEON.
+    target_include_directories(RecompiledFuncs PRIVATE ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/thirdparty/sse2neon)
 endif()
 # A call to an undeclared function links to a trap in WebAssembly, so it is an error there (N64Recomp-web's funcs.h
 # declares every function the recompiled code calls).
