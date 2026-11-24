@@ -23,10 +23,11 @@
 //
 // So where a batch's vertex lies where one of another texture of the part does, each at its texture's opposite edges
 // (one's t at its last row's far edge, the other's at 0, their s the same, or the same across), the two textures meet
-// there, and along the span such vertices share, each one's texels at the join take the colour halfway between theirs
-// and the other's: the nearest in its own palette, for a CI8 texture with an RGBA16 one. The two meet at one colour, and
-// the filter's step across the join is gone. Joined again (the picture made again from the same textures), the colours
-// already halfway stay about where they are.
+// there, and along the span such vertices share, the two textures' texels either side of the join take about the colour
+// halfway between theirs, each from its own palette, for a CI8 texture with an RGBA16 one: the pair of the two palettes'
+// colours that meets best near halfway (two quarters' palettes may share nothing near it, one sky, the other leaves). The
+// two sides meet at one colour, or nearly, and the filter's step across the join is gone. Joined again (the picture made
+// again from the same textures), colours already meeting stay about where they are.
 
 #include "recomp.h"
 #include "librecomp/helpers.hpp"
@@ -99,14 +100,6 @@ namespace {
     int piece_count = 0;
     gpr pieces_vertices = 0;
 
-    // Two textures' joins evened already in the part, so a texture drawn in several batches is evened once.
-    struct Join {
-        gpr a = 0, b = 0;
-        bool across = false;
-    };
-    Join joins[MAX_PIECES * 2];
-    int join_count = 0;
-
     // Whether a texture or palette of n bytes lies in RDRAM (a KSEG0 address, not a segment one).
     bool in_rdram(gpr address, int32_t n) {
         uint32_t a = (uint32_t)address;
@@ -119,41 +112,53 @@ namespace {
         b = (c >> 1) & 31;
     }
 
-    // The palette's entry nearest r, g and b with the alpha bit given, or -1 if it has none with that alpha.
-    int32_t nearest(uint8_t* rdram, gpr palette, int32_t r, int32_t g, int32_t b, uint32_t alpha) {
-        int32_t best = -1, best_distance = 0;
-        for (int32_t i = 0; i < 256; i++) {
-            uint32_t c = MEM_HU(i * 2, palette);
-            if ((c & 1) != alpha) {
-                continue;
-            }
-            int32_t cr, cg, cb;
-            rgba16_split(c, cr, cg, cb);
-            int32_t distance = (cr - r) * (cr - r) + (cg - g) * (cg - g) + (cb - b) * (cb - b);
-            if (best < 0 || distance < best_distance) {
-                best = i;
-                best_distance = distance;
-            }
-        }
-        return best;
+    int32_t distance(int32_t r0, int32_t g0, int32_t b0, int32_t r1, int32_t g1, int32_t b1) {
+        return (r0 - r1) * (r0 - r1) + (g0 - g1) * (g0 - g1) + (b0 - b1) * (b0 - b1);
     }
 
-    // Texels a and b (byte offsets in their textures) take the colour halfway between theirs, each the nearest in its
-    // own palette, each keeping its alpha bit.
+    // Texels a and b (byte offsets in their textures) take a colour each from their own palettes, keeping their alpha
+    // bits: the pair that meets best across the join while staying near halfway between the two texels' colours. A
+    // palette may have nothing near halfway (one side sky, the other leaves), and then the pair meeting matters more
+    // than either side's nearness to it: the step between them counts twice the distance of each from halfway.
     void even(uint8_t* rdram, const Picture& pa, int32_t a, const Picture& pb, int32_t b) {
         uint32_t ca = MEM_HU(MEM_BU(a, pa.texture) * 2, pa.palette);
         uint32_t cb = MEM_HU(MEM_BU(b, pb.texture) * 2, pb.palette);
         int32_t ar, ag, ab, br, bg, bb;
         rgba16_split(ca, ar, ag, ab);
         rgba16_split(cb, br, bg, bb);
-        int32_t r = (ar + br + 1) / 2, g = (ag + bg + 1) / 2, bl = (ab + bb + 1) / 2;
-        int32_t ia = nearest(rdram, pa.palette, r, g, bl, ca & 1);
-        int32_t ib = nearest(rdram, pb.palette, r, g, bl, cb & 1);
-        if (ia >= 0) {
-            MEM_B(a, pa.texture) = (int8_t)ia;
+        // Halfway, doubled to keep its half steps.
+        int32_t r = ar + br, g = ag + bg, bl = ab + bb;
+        int32_t best_a = -1, best_b = -1, best = 0;
+        for (int32_t i = 0; i < 256; i++) {
+            uint32_t c = MEM_HU(i * 2, pa.palette);
+            if ((c & 1) != (ca & 1)) {
+                continue;
+            }
+            int32_t ir, ig, ib;
+            rgba16_split(c, ir, ig, ib);
+            int32_t near_a = distance(ir * 2, ig * 2, ib * 2, r, g, bl);
+            if (best_a >= 0 && near_a >= best) {
+                continue;
+            }
+            for (int32_t k = 0; k < 256; k++) {
+                uint32_t d = MEM_HU(k * 2, pb.palette);
+                if ((d & 1) != (cb & 1)) {
+                    continue;
+                }
+                int32_t kr, kg, kb;
+                rgba16_split(d, kr, kg, kb);
+                int32_t cost = near_a + distance(kr * 2, kg * 2, kb * 2, r, g, bl) +
+                               2 * distance(ir * 2, ig * 2, ib * 2, kr * 2, kg * 2, kb * 2);
+                if (best_a < 0 || cost < best) {
+                    best_a = i;
+                    best_b = k;
+                    best = cost;
+                }
+            }
         }
-        if (ib >= 0) {
-            MEM_B(b, pb.texture) = (int8_t)ib;
+        if (best_a >= 0) {
+            MEM_B(a, pa.texture) = (int8_t)best_a;
+            MEM_B(b, pb.texture) = (int8_t)best_b;
         }
     }
 
@@ -161,13 +166,6 @@ namespace {
     // the span the shared vertices cover. Down (across false): p's last row on q's first, or q's last on p's first;
     // across: the same for columns.
     void join(uint8_t* rdram, gpr vertices, const Piece& p, const Piece& q, bool across) {
-        for (int i = 0; i < join_count; i++) {
-            const Join& j = joins[i];
-            if (j.across == across && ((j.a == p.picture.texture && j.b == q.picture.texture) ||
-                                       (j.a == q.picture.texture && j.b == p.picture.texture))) {
-                return;
-            }
-        }
         // Which of the two is first (above, or to the left), and the span along the join (10.5), from either's
         // shared vertices.
         const Piece* first = nullptr;
@@ -204,10 +202,6 @@ namespace {
         if (first == nullptr || high <= low) {
             return;
         }
-        if (join_count < (int)(sizeof(joins) / sizeof(joins[0]))) {
-            joins[join_count++] = { p.picture.texture, q.picture.texture, across };
-        }
-
         const Picture& a = first->picture;
         const Picture& b = (first == &p) ? q.picture : p.picture;
         int32_t length = std::min(across ? a.height : a.width, across ? b.height : b.width);
@@ -299,7 +293,6 @@ extern "C" void mp_model_batch_end(uint8_t* rdram) {
         int32_t first = MEM_H(0, BATCH_FIRST), last = MEM_H(0, BATCH_END);
         if (first == 0 || vs != pieces_vertices) {
             piece_count = 0;
-            join_count = 0;
             pieces_vertices = vs;
             if (settilesize == 0) {
                 picture = Picture();
