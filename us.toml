@@ -34,8 +34,9 @@ renamed = [
 # - a process that waits on the SI manager's thread (RequestSIFunction's type 2: the EEPROM, the Rumble Pak) waits
 #   for it there and then, where the game would sleep a frame at a time until the answer came, as many as real time
 #   took;
-# - the sound driver's thread gets its retraces from netplay, two at the start of each frame, which it makes the sound
-#   of before the frame goes on, rather than from the VI handler, and makes as many samples at each as a console
+# - the sound driver's thread gets its retraces from netplay, as many at the start of each frame as the frame before
+#   took in real time (2 to 4), which it makes the sound of before the frame goes on (the scheduler starting each sound
+#   task at once rather than at the next VI), rather than from the VI handler, and makes as many samples at each as a console
 #   playing in time would, rather than as many as the sound still queued on this computer asks for;
 # - a board's background loader finishes each piece the board sends it before the board goes on.
 # With no session each hook returns at once, or hands back the value it was given.
@@ -48,6 +49,15 @@ text = "{ int mp_netplay_si_read(uint8_t*); if (mp_netplay_si_read(rdram)) { ctx
 func = "func_80013E84"
 before_vram = 0x80013E84
 text = "{ void mp_netplay_pad_frame(uint8_t*, recomp_context*); mp_netplay_pad_frame(rdram, ctx); }"
+
+# The scheduler's sound thread (func_80063C38, src/engine/nnsched.c), which waits for a VI and then takes a sound task
+# if one is waiting, so that a task waits for the next VI: during a session it waits for the task itself instead and
+# starts it at once (to after_3, the call's end, with the task taken), as netplay steps the sound driver several times a
+# frame and each step waits for its task (mp_netplay_audio_direct).
+[[patches.hook]]
+func = "func_80063C38"
+before_vram = 0x80063C78
+text = "{ int mp_netplay_audio_direct(uint8_t*, recomp_context*); if (mp_netplay_audio_direct(rdram, ctx)) goto after_3; }"
 
 # The VI handler's D_800F383C += 1 (src/engine/nnsched.c): during a session, the count it stores is netplay's.
 [[patches.hook]]

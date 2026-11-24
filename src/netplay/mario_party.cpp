@@ -47,6 +47,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -106,6 +107,7 @@ namespace {
     int vis_window_frames = 0;
     int vis_window_total = 0;
     std::atomic<int> sound_gaps{ 0 };
+    double window_audio_ms = 0, window_advance_ms = 0; // the time the frames spent stepping the sound, and in netplay
 
     // What the game state leaves out: RDRAM the runtime and the game's system threads write as real time passes, which two
     // runs of the same inputs never share and the game's logic never reads back. Found by diffing RDRAM between a
@@ -449,8 +451,10 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
         if (++vis_window_frames == 600) {
             char line[200];
             snprintf(line, sizeof(line), "[netplay] frame %" PRIu64 ": the last 600 frames ran at %.1f a second; the "
-                    "sound ran dry %d times\n", netplay::frame(), 600.0 * 60.0 / std::max(vis_window_total, 1),
-                    sound_gaps.exchange(0));
+                    "sound ran dry %d times; a frame spent %.1f ms stepping the sound, %.1f ms in netplay\n",
+                    netplay::frame(), 600.0 * 60.0 / std::max(vis_window_total, 1), sound_gaps.exchange(0),
+                    window_audio_ms / 600, window_advance_ms / 600);
+            window_audio_ms = window_advance_ms = 0;
             netplay::log_line(line);
             vis_window_frames = 0;
             vis_window_total = 0;
@@ -550,6 +554,20 @@ extern "C" void mp_netplay_tune_bank(gpr bank) {
     if (netplay::active()) {
         tune_bank = uint32_t(bank);
     }
+}
+
+// The hook before the scheduler's sound thread waits for a VI (func_80063C38): during a session, it waits for a sound
+// task instead (the scheduler's queue of them, D_800ED3A8), so the task runs as soon as the driver sends it, not at the
+// next VI: netplay steps the driver several times at a frame's start and each step waits for its task, which would
+// otherwise cost a VI each. Returns whether it took one, with the task in the thread's 0x3C($sp) and v0 0, as the
+// thread's own NOBLOCK take leaves them.
+extern "C" int mp_netplay_audio_direct(uint8_t* rdram, recomp_context* ctx) {
+    if (!netplay::active()) {
+        return 0;
+    }
+    osRecvMesg(rdram, (int32_t)0x800ED3A8, (int32_t)(uint32_t(ctx->r29) + 0x3C), OS_MESG_BLOCK);
+    ctx->r2 = 0;
+    return 1;
 }
 
 // The hooks in the sound driver's thread: once it has a message, and as it comes back to wait for the next. During a
@@ -749,7 +767,10 @@ extern "C" void mp_netplay_pad_frame(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
 
+    using Ms = std::chrono::duration<double, std::milli>;
+    auto audio_start = std::chrono::steady_clock::now();
     step_audio(rdram, ctx);
+    window_audio_ms += Ms(std::chrono::steady_clock::now() - audio_start).count();
     prc_survey(rdram);
 
     // Each scene the session plays, as omOvlGotoEx last went to it (D_800F09F4: a board, a minigame, a menu, by the
@@ -763,7 +784,9 @@ extern "C" void mp_netplay_pad_frame(uint8_t* rdram, recomp_context* ctx) {
 
     step_minigames(rdram);
 
+    auto advance_start = std::chrono::steady_clock::now();
     netplay::Frame fr = netplay::advance(rdram);
+    window_advance_ms += Ms(std::chrono::steady_clock::now() - advance_start).count();
     fill_ring(rdram, fr);
     audio_vis = std::clamp(int(fr.vis), 2, 4);
     take_over_left(rdram, fr.left);

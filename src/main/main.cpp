@@ -63,7 +63,7 @@
 #include "window_icon_bmp.h"
 #endif
 
-const std::string version_string = "0.2.14-netplay-alpha.7";
+const std::string version_string = "0.2.14-netplay-alpha.8";
 
 template<typename... Ts>
 void exit_error(const char* str, Ts ...args) {

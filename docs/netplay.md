@@ -120,8 +120,10 @@ build (`MP_NETPLAY_NO_MESSAGES` leaves the window out, for the tests).
 Online, the game makes its sound as its frames come: each frame steps the sound driver as many retraces (2 to 4) as
 that frame took in real time where it was first played (the host's, or the recorder's), carried with the frame as its
 `vis` (`netplay_core.h`'s Frame), so a computer that runs the game slower than 30 frames a second still makes sound as
-fast as it plays it, and every copy steps it alike. `session.log` says every 600 frames how fast they ran and how often
-the sound ran dry. A stall for a late player holds the sound up, and the frames after it make it up at once. So during a session the sound keeps a cushion of 120 ms, played back to within half a percent faster
+fast as it plays it, and every copy steps it alike. The scheduler's sound thread starts each of those
+steps' sound tasks at once rather than at the next VI as it otherwise would (`mp_netplay_audio_direct`), or the steps
+would cost a VI each and the frames run at half speed. `session.log` says every 600 frames how fast they ran, how often
+the sound ran dry, and how long a frame spent stepping the sound and in netplay. A stall for a late player holds the sound up, and the frames after it make it up at once. So during a session the sound keeps a cushion of 120 ms, played back to within half a percent faster
 or slower to stay there, and after a stall long enough to empty it, it waits until the cushion is full again rather
 than crackling (`src/main/main.cpp`'s queue_samples).
 
