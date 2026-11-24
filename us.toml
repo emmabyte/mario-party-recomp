@@ -120,6 +120,22 @@ func = "func_800FDBB4_BashNCash"
 before_vram = 0x800FDEAC
 text = "{ void mp_hud_side_sprites(uint8_t*, gpr, int32_t, gpr, gpr, int32_t); mp_hud_side_sprites(rdram, (gpr)(int32_t)0x800FE5D8, 20, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800ED60C), (gpr)(int32_t)0x800EE330, 0xC); }"
 
+# A shadow in Bash 'n' Cash and Coin Block Blitz of something thrown into the air: the game scales it by the height h
+# of what casts it, 0.4 - h/2000, but above a height of 200 its branch skips the sum and hands h itself on as the
+# scale, so the shadow, 120 across, was drawn hundreds of times that over the arena, and its black lay over the floor
+# and the walls' feet (Bash 'n' Cash's stone, Coin Block Blitz's grass) for as long as that was up. Where the two
+# ways meet, with the scale in f2 before it is passed (Bash 'n' Cash from 0x800FC1F0, Coin Block Blitz from 0x800F856C),
+# a height carries on the sum, so the shadow shrinks on as it climbs.
+[[patches.hook]]
+func = "func_800FBCC8_BashNCash"
+before_vram = 0x800FC1F8
+text = "if (ctx->f2.fl > 200.0f) ctx->f2.fl = 0.4f - ctx->f2.fl / 2000.0001f;"
+
+[[patches.hook]]
+func = "func_800F83A8_CoinBlockBlitz"
+before_vram = 0x800F8574
+text = "if (ctx->f2.fl > 200.0f) ctx->f2.fl = 0.4f - ctx->f2.fl / 2000.0001f;"
+
 # A screen wipe past 4:3 (lib/mario-party-engine/src/wipe.cpp says how): the wipe module's whole-screen rectangle
 # (func_800728F4(gfx, alpha), out through 0x800729C0), and a shape wipe (func_8007420C, with gfx in t0): its draws
 # (from 0x80074250, past its whole-screen rectangle for a closed shape, to its end at 0x80074C14) and its rectangles
