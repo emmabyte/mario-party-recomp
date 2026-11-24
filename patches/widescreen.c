@@ -236,7 +236,8 @@ void widescreen_piranhas_trees(omObjData* object) {
 // sand ring out from under the players and the mushrooms with it, so it keeps its size, and a copy of it lies beside
 // each of its sides and corners, the grass going on at its own scale. Each copy is the floor mirrored across the edge it
 // shares with it (a corner's across both), so that where two meet the grass and its shading meet their own mirror image
-// and no edge shows. They are a little lower than the floor, so that the game's own floor is the one drawn where they
+// and no edge shows. A side's copy, mirrored in one way only, is mirrored up and down as well (the floor is flat), or its
+// triangles would face away and the game would not draw them. They are a little lower than the floor, so that the game's own floor is the one drawn where they
 // overlap, and each copy's sand ring is over 2200 from the middle, past what the camera sees. us.toml's hook calls this
 // once the setup has made the floor; nothing moves them after. They take 8 of the game's 128 forms, of which the
 // minigame uses 88.
@@ -266,6 +267,9 @@ void widescreen_musical_floor(omObjData* stage) {
             }
             if (z != 0) {
                 D_800F2B7C[copy].unk_44 = -D_800F2B7C[copy].unk_44;
+            }
+            if ((x == 0) != (z == 0)) {
+                D_800F2B7C[copy].unk_40 = -D_800F2B7C[copy].unk_40;
             }
         }
     }
