@@ -1,0 +1,1 @@
+- In Piranha's Pursuit in a wide window, the vine stands, hanging vines, logs and boulders no longer vanish in the left side of the picture as the course scrolls past them: they go out past the window's edge.

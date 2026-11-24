@@ -286,6 +286,16 @@ void widescreen_piranhas_trees(omObjData* object) {
     }
 }
 
+// Its obstacles, the hanging vines, the logs and the boulders, 25 laid along the track (func_800FB5D4_PiranhasPursuit),
+// are hidden by their frame function (func_800FBE00_PiranhasPursuit) while one is more than 1300 from the scroll, which
+// at 4:3 is just past the picture's edges, so a wider picture showed them appear and vanish inside it. us.toml's hook
+// gives that test this reach instead, the 1300 as many times longer as the picture is wider than 4:3: the view at the
+// obstacles' depth widens by that much on each side, the camera's aim behind the scroll with it, so they come and go
+// past the wider picture's edges, and at 4:3 the game's own 1300.
+f32 widescreen_piranhas_obstacle_reach(void) {
+    return 1300.0f * mp_aspect_ratio() * (3.0f / 4.0f);
+}
+
 // Limbo Dance (overlay 0x29)'s scenery along the course, the torches, the Toads, the bushes and the trees and ferns
 // behind them, is 35 props (D_800FF220_LimboDance, made in func_800FA418_LimboDance), each a form of its own, which
 // the game keeps within the course's scroll plus or minus 1050: each frame (func_800FB058_LimboDance's loop) it moves

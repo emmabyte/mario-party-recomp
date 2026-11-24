@@ -233,6 +233,14 @@ func = "func_800FAEE8_PiranhasPursuit"
 before_vram = 0x800FB030
 text = "{ void widescreen_piranhas_trees(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_trees(rdram, ctx); }"
 
+# Piranha's Pursuit's obstacles shown out to a wide picture's edges (patches/widescreen.c,
+# widescreen_piranhas_obstacle_reach): their frame function, as it compares an obstacle's distance from the scroll (f0)
+# with the 1300 past which it hides it (f2). The game's registers are kept around the call.
+[[patches.hook]]
+func = "func_800FBE00_PiranhasPursuit"
+before_vram = 0x800FC0D4
+text = "{ void widescreen_piranhas_obstacle_reach(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_piranhas_obstacle_reach(rdram, ctx); float reach = ctx->f0.fl; *ctx = saved; ctx->f2.fl = reach; }"
+
 # Limbo Dance's scenery copied a ring's width away (patches/widescreen.c, widescreen_limbo_scenery): its sprite list's
 # setup, asked for 9 more places as it starts (the length in a0) and with them marked used once it has made them; the
 # setup once it has made the props, as it returns; the frame function once its loop has moved those that fell behind;
