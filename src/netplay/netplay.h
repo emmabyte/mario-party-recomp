@@ -33,6 +33,10 @@ namespace mp_netplay {
 
     // Whether an online session is running: the sound keeps a cushion then (src/main/main.cpp).
     bool active();
+    // The sound ran dry online (src/main/main.cpp), for session.log's count of gaps.
+    void note_sound_gap();
+    // As the program closes: tells the other players' copies this one is leaving the session.
+    void leave();
 }
 
 namespace netplay {

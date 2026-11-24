@@ -109,12 +109,19 @@ differ, both name the frame and swap its hashes of each 4 KB page of RDRAM, so e
 differ; both then play on to the same frame, 60 after it, write RDRAM there to `desync-frame<n>.rdram` in the record,
 and stop. `tools/netplay_rdram_diff.py` names what differs between the two copies' files by symbol, and replaying each
 copy's record on one computer shows which went its own way. `MP_NETPLAY_TEST_POKE=<frame>:<address>` changes a word of
-RDRAM at that frame, a desync to test this with (`NETPLAY_TEST_GUEST_ENV` passes it to the session test's guests). A session that ends for a reason (copies that differ, a player gone, a
-desync, a host not found) shows it in a window before the program closes, as stderr reaches no one from the Windows
+RDRAM at that frame, a desync to test this with (`NETPLAY_TEST_GUEST_ENV` passes it to the session test's guests). A guest that leaves during a session (its window closed, which sends a goodbye, or quiet for 5
+seconds) doesn't end it: the host plays on with that player's inputs empty from the first frame it lacks, and each
+frame's `left` mask (carried in the frames the host sends and in recordings) has the game make that player a computer
+player (`mario_party.cpp`'s take_over_left). A host that leaves (its goodbye, or quiet for 15 seconds) ends its guests'
+sessions, and Resume Party picks the party up again. A session that ends for a reason (copies that differ, the host
+gone, a desync, a host not found) shows it in a window before the program closes, as stderr reaches no one from the Windows
 build (`MP_NETPLAY_NO_MESSAGES` leaves the window out, for the tests).
 
-Online, the game makes its sound as its frames come, which a stall for a late player holds up and the frames after it
-make up at once. So during a session the sound keeps a cushion of 120 ms, played back to within half a percent faster
+Online, the game makes its sound as its frames come: each frame steps the sound driver as many retraces (2 to 4) as
+that frame took in real time where it was first played (the host's, or the recorder's), carried with the frame as its
+`vis` (`netplay_core.h`'s Frame), so a computer that runs the game slower than 30 frames a second still makes sound as
+fast as it plays it, and every copy steps it alike. `session.log` says every 600 frames how fast they ran and how often
+the sound ran dry. A stall for a late player holds the sound up, and the frames after it make it up at once. So during a session the sound keeps a cushion of 120 ms, played back to within half a percent faster
 or slower to stay there, and after a stall long enough to empty it, it waits until the cushion is full again rather
 than crackling (`src/main/main.cpp`'s queue_samples).
 

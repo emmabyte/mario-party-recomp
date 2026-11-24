@@ -32,8 +32,10 @@
 //   frame at a time until the answer comes. While netplay runs it waits for the answer there and then.
 // - The sound driver's (func_800130E8): it makes sound at each retrace and moves the music's and the sounds' state on
 //   as it does, and the logic reads that state back (omMain waits for the music to stop before it changes scenes).
-//   While netplay runs it gets two retraces at each frame's start, makes a fixed number of samples at each, and the
+//   While netplay runs it gets as many retraces at each frame's start as the frame before took in real time where it
+//   was first played (2 to 4, netplay::Frame's vis, from frame_vis), makes a fixed number of samples at each, and the
 //   frame waits for it (step_audio).
+// - A player who left the session is made a computer player (take_over_left, from netplay::Frame's left).
 // - A board's background loader's (src/48D90.c): the board waits for each piece it sends to be finished.
 // The game state the hash covers is RDRAM less what `excluded`, the live processes' stacks and the frames' display
 // lists name, with the heaps' free blocks zeroed first (state_ranges).
@@ -94,6 +96,16 @@ namespace {
     // The VIs that really passed, and the VI count the game reads while netplay runs.
     std::atomic<uint32_t> real_vis{ 0 };
     std::atomic<uint32_t> game_vis{ 0 };
+    // The retraces the sound driver steps for the frame to come: the frame before's vis (netplay::Frame's), the VIs it
+    // took in real time where it was played first, so the sound keeps pace with real time when frames run slow.
+    int audio_vis = 2;
+    // frame_vis: real_vis when it was last asked, and the VIs owed beyond the 4 a frame carries, up to 4 more.
+    uint32_t vis_asked = 0;
+    int vis_owed = 0;
+    // For session.log, every 600 frames: the VIs they took, and how often the sound ran dry meanwhile.
+    int vis_window_frames = 0;
+    int vis_window_total = 0;
+    std::atomic<int> sound_gaps{ 0 };
 
     // What the game state leaves out: RDRAM the runtime and the game's system threads write as real time passes, which two
     // runs of the same inputs never share and the game's logic never reads back. Found by diffing RDRAM between a
@@ -380,6 +392,27 @@ static void use_host_save(const std::vector<uint8_t>& save) {
 
 void mp_netplay::start() {
     netplay::start();
+    // Closing the window during a session says goodbye at once (netplay::leave), so the others needn't wait for this
+    // copy to go quiet. The watch runs on the thread that takes the window's events, before the frontend quits.
+    static bool watching = false;
+    if (!watching && netplay::active()) {
+        watching = true;
+        SDL_AddEventWatch([](void*, SDL_Event* event) {
+            if (event->type == SDL_QUIT ||
+                (event->type == SDL_WINDOWEVENT && event->window.event == SDL_WINDOWEVENT_CLOSE)) {
+                netplay::leave();
+            }
+            return 0;
+        }, nullptr);
+    }
+}
+
+void mp_netplay::leave() {
+    netplay::leave();
+}
+
+void mp_netplay::note_sound_gap() {
+    sound_gaps++;
 }
 
 bool mp_netplay::active() {
@@ -404,6 +437,26 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
         return folder;
     };
     game.can_snapshot = can_snapshot;
+    game.frame_vis = []() {
+        // The VIs since the last frame, 2 to 4; a longer stall is carried into the next frames, a little at a time.
+        uint32_t now = real_vis.load();
+        int passed = int(now - vis_asked);
+        vis_asked = now;
+        int total = std::min(passed + vis_owed, 8);
+        int vis = std::clamp(total, 2, 4);
+        vis_owed = std::max(0, total - vis);
+        vis_window_total += passed;
+        if (++vis_window_frames == 600) {
+            char line[200];
+            snprintf(line, sizeof(line), "[netplay] frame %" PRIu64 ": the last 600 frames ran at %.1f a second; the "
+                    "sound ran dry %d times\n", netplay::frame(), 600.0 * 60.0 / std::max(vis_window_total, 1),
+                    sound_gaps.exchange(0));
+            netplay::log_line(line);
+            vis_window_frames = 0;
+            vis_window_total = 0;
+        }
+        return vis;
+    };
     game.extra_state = extra_state;
     game.set_extra_state = set_extra_state;
     game.save = host_save;
@@ -474,9 +527,9 @@ namespace {
             osSendMesg(rdram, (int32_t)AUDIO_QUEUE, 1, OS_MESG_NOBLOCK);
             osRecvMesg(rdram, (int32_t)queue, NULLPTR, OS_MESG_BLOCK);
         };
-        int owed = std::min(audio_borrowed, 2);
+        int owed = std::min(audio_borrowed, audio_vis);
         audio_borrowed -= owed;
-        for (int i = owed; i < 2; i++) {
+        for (int i = owed; i < audio_vis; i++) {
             retrace();
         }
         for (int extra = 0; extra < 4 && tune_bank != 0; extra++) {
@@ -617,6 +670,7 @@ static std::vector<uint8_t> extra_state() {
     put(uint32_t(eeprom.size()));
     out.insert(out.end(), eeprom.begin(), eeprom.end());
     put(uint32_t(audio_borrowed));
+    put(uint32_t(audio_vis));
     // The tests' list of minigames (MP_NETPLAY_MINIGAMES): how far it has got.
     put(uint32_t(next_minigame));
     put(current_minigame != nullptr ? uint32_t(current_minigame - minigames.data()) : UINT32_MAX);
@@ -639,6 +693,7 @@ static void set_extra_state(const std::vector<uint8_t>& in) {
         at += eeprom_size;
     }
     audio_borrowed = int(take());
+    audio_vis = std::clamp(int(take()), 2, 4);
     next_minigame = take();
     uint32_t current = take();
     current_minigame = current < minigames.size() ? &minigames[current] : nullptr;
@@ -671,6 +726,22 @@ static void prc_survey(uint8_t* rdram) {
             alive, ran, line.c_str());
 }
 
+// The players (GwPlayer, 0x30 bytes each from 0x800F32B0) whose controller's player has left the session: each is made
+// a computer player (flags' bit 0, which the boards and minigames read as it is), every frame so that a new party's
+// setup doesn't make them human again. The frame's left mask is the same on every copy, so is this.
+static void take_over_left(uint8_t* rdram, uint8_t left) {
+    if (left == 0) {
+        return;
+    }
+    for (int i = 0; i < 4; i++) {
+        gpr player = (int32_t)(0x800F32B0 + 0x30 * i);
+        uint8_t port = MEM_BU(3, player);
+        if (port < 4 && (left & (1u << port)) != 0) {
+            MEM_HU(6, player) = uint16_t(MEM_HU(6, player) | 1);
+        }
+    }
+}
+
 // The hook at func_80013E84's start, once a frame on the main thread: while netplay runs, steps the sound driver, hands
 // RDRAM to netplay and fills the game's ring with the frame's inputs, which the game's own func_80013E84 then reads.
 extern "C" void mp_netplay_pad_frame(uint8_t* rdram, recomp_context* ctx) {
@@ -694,6 +765,8 @@ extern "C" void mp_netplay_pad_frame(uint8_t* rdram, recomp_context* ctx) {
 
     netplay::Frame fr = netplay::advance(rdram);
     fill_ring(rdram, fr);
+    audio_vis = std::clamp(int(fr.vis), 2, 4);
+    take_over_left(rdram, fr.left);
 
     // The clocks the frame's logic reads, by the frame.
     game_vis = uint32_t(2 * netplay::frame());

@@ -63,7 +63,7 @@
 #include "window_icon_bmp.h"
 #endif
 
-const std::string version_string = "0.2.14-netplay-alpha.6";
+const std::string version_string = "0.2.14-netplay-alpha.7";
 
 template<typename... Ts>
 void exit_error(const char* str, Ts ...args) {
@@ -258,6 +258,7 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
         }
         if (queued_ms < 10.0 && !refilling) {
             refilling = true;
+            mp_netplay::note_sound_gap();
             SDL_PauseAudioDevice(audio_device, 1);
         }
         size_t in_frames = num_bytes_to_queue / (output_channels * sizeof(float));
@@ -673,6 +674,7 @@ int main(int argc, char** argv) {
     cfg.error_handling_callbacks = error_handling_callbacks;
     cfg.threads_callbacks = { .get_game_thread_name = game_thread_name };
     recomp::start(cfg);
+    mp_netplay::leave();
 
 #ifndef __EMSCRIPTEN__
     NFD_Quit();

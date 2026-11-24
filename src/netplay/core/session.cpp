@@ -41,6 +41,11 @@
 // its own, and each guest the host's: a frame whose hashes differ ends the session and names the frame, since from
 // there the games differ: the two copies swap that frame's hashes of each 4 KB page (KIND_DESYNC), play on to the same
 // frame and write RDRAM there to the session's record, so the record says where the games went apart.
+//
+// A guest that leaves (its goodbye as its window closes, or quiet for drop_ms) doesn't end the host's session: from the
+// first frame of its inputs the host lacks, they're empty and the frame's left mask says so, which the game reads to
+// have a computer player take that player's place (leave_session, Frame's left). A host that leaves ends its guests'.
+// Each whole frame also carries the VIs it took on the host (Frame's vis), for the game's sound to keep real time.
 
 #include "netplay_internal.h"
 #include "udp.h"
@@ -92,7 +97,8 @@ namespace {
     bool delay_forced = false; // MP_NETPLAY_DELAY, on the host: no measuring
     bool delay_known = false;  // the host has chosen the session's delay (a guest: and sent it)
     int64_t session_frames = -1;
-    int timeout_ms = 15000;
+    int timeout_ms = 15000; // the host, gone quiet this long, ends a guest's session
+    int drop_ms = 5000;     // a guest, gone quiet this long, leaves the host's session
     int drop_percent = 0;
 
     std::string identity;
@@ -116,6 +122,7 @@ namespace {
 
     double recent_wait_ms = 0;          // this copy's frames' waits in the last second (note_wait)
     std::vector<Inputs> local_inputs;   // by frame
+    std::vector<uint8_t> local_vis;     // on the host: each frame's VIs (Frame's vis), by frame, beside its pad
     std::vector<uint64_t> local_hashes; // by frame
     uint64_t hashes_compared = 0;
 
@@ -144,6 +151,9 @@ namespace {
         std::string name;
         // A party the host resumes: whether this guest's copy has its save (0 not yet said, 1 yes, 2 no).
         uint8_t has_party = 0;
+        // On the host, a guest that left during the session (said goodbye, or went quiet for drop_ms): the first
+        // frame its inputs are empty from, where a computer player takes its place (Frame's left). UINT32_MAX: still in.
+        uint32_t left_from = UINT32_MAX;
     };
     // On a guest: the lobby's players as the host last listed them.
     struct Seat {
@@ -160,6 +170,7 @@ namespace {
     int slot_for(const udp::Endpoint& from);
     bool receive_packet(int wait_ms);
     void drop_guest(int p);
+    void leave_session(int p, const char* how);
 
     uint64_t clock_us() {
         return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count()) | 1;
@@ -173,6 +184,8 @@ namespace {
     Remote remotes[PORTS];          // the host's: by player, 1 on; a guest's: [0], the host
     std::vector<Whole> wholes;      // on a guest: the whole frames the host sent, by frame
     std::vector<uint8_t> whole_have;
+    std::vector<uint8_t> wholes_vis; // on a guest: each whole frame's VIs, the host's
+    std::vector<uint8_t> wholes_left; // on a guest: each whole frame's players that have left
 
     struct Writer {
         uint8_t buf[1472]; // a UDP datagram that fits a 1500-byte link
@@ -431,13 +444,29 @@ namespace {
     uint32_t wholes_ready() {
         uint32_t ready = uint32_t(local_inputs.size());
         for (int p = 1; p < players; p++) {
-            ready = std::min(ready, remotes[p].next);
+            if (remotes[p].left_from == UINT32_MAX) {
+                ready = std::min(ready, remotes[p].next);
+            }
         }
         return ready;
     }
 
     Inputs input_of(int p, uint32_t f) {
-        return p == 0 ? local_inputs[f] : remotes[p].inputs[f];
+        if (p == 0) {
+            return local_inputs[f];
+        }
+        return f < remotes[p].left_from ? remotes[p].inputs[f] : Inputs{};
+    }
+
+    // On the host, the players that have left by frame f (Frame's left).
+    uint8_t left_at(uint32_t f) {
+        uint8_t mask = 0;
+        for (int p = 1; p < players; p++) {
+            if (f >= remotes[p].left_from) {
+                mask |= uint8_t(1u << p);
+            }
+        }
+        return mask;
     }
 
     // A guest's to the host.
@@ -467,6 +496,9 @@ namespace {
         uint32_t ready = wholes_ready();
         for (int p = 1; p < players; p++) {
             Remote& guest = remotes[p];
+            if (guest.left_from != UINT32_MAX) {
+                continue;
+            }
             Writer w;
             header(w, KIND_FRAMES);
             w.u32(guest.next);
@@ -481,6 +513,8 @@ namespace {
                         w.pad(in[i]);
                     }
                 }
+                w.u8(local_vis[f]);
+                w.u8(left_at(f));
             }
             put_hashes(w);
             put_clock(w, guest);
@@ -733,15 +767,21 @@ namespace {
                     whole[q][i] = r.pad();
                 }
             }
+            uint8_t vis = r.u8();
+            uint8_t left = r.u8();
             if (!r.ok) {
                 return;
             }
             if (wholes.size() <= f) {
                 wholes.resize(f + 1);
                 whole_have.resize(f + 1, 0);
+                wholes_vis.resize(f + 1, 2);
+                wholes_left.resize(f + 1, 0);
             }
             wholes[f] = whole;
             whole_have[f] = 1;
+            wholes_vis[f] = uint8_t(std::clamp<int>(vis, 2, 4));
+            wholes_left[f] = left;
         }
         while (host.next < whole_have.size() && whole_have[host.next]) {
             host.next++;
@@ -784,7 +824,14 @@ namespace {
         uint8_t kind = r.u8();
         int who = r.u8();
         if (hosting && r.ok && kind == KIND_BYE) {
-            if (!handshaken) {
+            if (handshaken) {
+                for (int p = 1; p < players; p++) {
+                    if (remotes[p].known && remotes[p].endpoint == from_endpoint) {
+                        leave_session(p, "left");
+                        break;
+                    }
+                }
+            } else {
                 for (int p = 1; p < players; p++) {
                     if (remotes[p].known && remotes[p].endpoint == from_endpoint) {
                         say("[netplay] player %d left\n", p + 1);
@@ -798,6 +845,11 @@ namespace {
         if (!hosting && r.ok && kind == KIND_BYE) {
             if (from_endpoint == remotes[0].endpoint && !handshaken) {
                 say("[netplay] the host closed the lobby\n");
+                end_session(3);
+            }
+            if (from_endpoint == remotes[0].endpoint && handshaken && !in_lobby) {
+                say("[netplay] the host left the party. The party was saved at the start of the last scene: the host can "
+                    "pick it up with Resume Party.\n");
                 end_session(3);
             }
             return true;
@@ -950,7 +1002,7 @@ namespace {
             if (from.identity_ok) {
                 from.saw_ours = true;
             }
-            if (handshaken) { // its buffers are made once the handshake ends; the guest sends again
+            if (handshaken && from.left_from == UINT32_MAX) { // its buffers are made once the handshake ends
                 take_inputs(r, from, who);
             }
         } else if (kind == KIND_DESYNC && handshaken) {
@@ -1146,15 +1198,17 @@ namespace {
     // the pad for two frames this once, one that shrinks by a frame samples none, as the frame it would has its sample
     // already. Each copy moves its own, so the copies needn't agree on when: the frames' inputs are whatever each
     // player's copy sent, the same everywhere.
-    void push_local(const Inputs& mine) {
+    void push_local(const Inputs& mine, uint8_t vis) {
         if (target_delay > delay && delay < 15) {
             local_inputs.push_back(mine);
+            local_vis.push_back(vis);
             delay++;
         } else if (target_delay < delay && delay > 1 && local_inputs.size() > sframe + 1) {
             delay--;
             return;
         }
         local_inputs.push_back(mine);
+        local_vis.push_back(vis);
     }
 
     // The buffers, once the delay is known: the first frames have no inputs from anyone.
@@ -1163,6 +1217,7 @@ namespace {
         connected_mask = (1u << players) - 1;
         first_delay = target_delay = delay;
         local_inputs.assign(size_t(delay), Inputs{});
+        local_vis.assign(size_t(delay), 2);
         for (Remote& r : remotes) {
             r.inputs.assign(size_t(delay), Inputs{});
             r.have.assign(size_t(delay), 1);
@@ -1170,6 +1225,8 @@ namespace {
         }
         wholes.assign(size_t(delay), Whole{});
         whole_have.assign(size_t(delay), 1);
+        wholes_vis.assign(size_t(delay), 2);
+        wholes_left.assign(size_t(delay), 0);
     }
 
     void prepare_handshake() {
@@ -1370,12 +1427,50 @@ namespace {
         return true;
     }
 
-    // The copy that has been silent longest, while a frame waits.
+    // The goodbye of a copy that is closing, so the others needn't wait for it to go quiet: the host's ends the guests'
+    // sessions, a guest's leaves the host's to play on without it.
+    void goodbye() {
+        std::lock_guard lock(session_mutex);
+        if (!handshaken || in_lobby) {
+            return;
+        }
+        for (int i = 0; i < 5; i++) {
+            Writer w;
+            header(w, KIND_BYE);
+            if (hosting) {
+                for (int p = 1; p < players; p++) {
+                    if (remotes[p].left_from == UINT32_MAX) {
+                        send(remotes[p], w);
+                    }
+                }
+            } else {
+                send(remotes[0], w);
+            }
+        }
+    }
+
+    // On the host, a guest gone from the session: from the first frame of its inputs still missing, its inputs are
+    // empty and a computer player takes its place (Frame's left), and the session plays on without waiting for it.
+    void leave_session(int p, const char* how) {
+        Remote& guest = remotes[p];
+        if (guest.left_from != UINT32_MAX) {
+            return;
+        }
+        guest.left_from = std::max(guest.next, uint32_t(first_delay));
+        say("[netplay] frame %" PRIu64 ": player %d %s; a computer player takes their place from frame %u\n", sframe,
+                p + 1, how, guest.left_from);
+        session_cv.notify_all();
+    }
+
+    // The copy that has been silent longest, while a frame waits (of the guests still in, on the host).
     const Remote& quietest(int& who) {
         int first = hosting ? 1 : 0, last = hosting ? players : 1;
         who = first;
         for (int p = first; p < last; p++) {
-            if (remotes[p].heard < remotes[who].heard) {
+            if (hosting && remotes[p].left_from != UINT32_MAX) {
+                continue;
+            }
+            if (remotes[who].left_from != UINT32_MAX || remotes[p].heard < remotes[who].heard) {
                 who = p;
             }
         }
@@ -1398,7 +1493,7 @@ bool netplay::detail::open_session(const SessionSettings& settings) {
         delay_forced = true;
     }
     if (const char* f = getenv("MP_NETPLAY_FRAMES")) session_frames = strtoll(f, nullptr, 10);
-    if (const char* t = getenv("MP_NETPLAY_TIMEOUT_MS")) timeout_ms = atoi(t);
+    if (const char* t = getenv("MP_NETPLAY_TIMEOUT_MS")) timeout_ms = drop_ms = atoi(t);
     if (const char* d = getenv("MP_NETPLAY_DROP")) drop_percent = atoi(d);
     if (const char* j = getenv("MP_NETPLAY_JITTER_MS")) jitter_ms = atoi(j);
     if (const char* l = getenv("MP_NETPLAY_LATENCY_MS")) {
@@ -1485,7 +1580,7 @@ Frame netplay::detail::session_frame(uint64_t hash) {
         mine[i] = taken.samples[i][0];
     }
     adjust_delay();
-    push_local(mine);
+    push_local(mine, taken.vis);
 
     while (receive_packet(0)) {
     }
@@ -1506,8 +1601,11 @@ Frame netplay::detail::session_frame(uint64_t hash) {
             say("[netplay] frame %" PRIu64 ": waiting for player %d\n", sframe, who + 1);
             told = true;
         }
-        if (silent > std::chrono::milliseconds(timeout_ms)) {
-            say("[netplay] frame %" PRIu64 ": player %d stopped answering\n", sframe, who + 1);
+        if (hosting && silent > std::chrono::milliseconds(drop_ms)) {
+            leave_session(who, "stopped answering");
+        } else if (!hosting && silent > std::chrono::milliseconds(timeout_ms)) {
+            say("[netplay] frame %" PRIu64 ": the host stopped answering. The party was saved at the start of the last "
+                "scene: the host can pick it up with Resume Party.\n", sframe);
             end_session(3);
         }
     }
@@ -1518,6 +1616,8 @@ Frame netplay::detail::session_frame(uint64_t hash) {
 
     Frame fr;
     fr.connected = uint8_t(connected_mask);
+    fr.vis = hosting ? local_vis[sframe] : wholes_vis[sframe];
+    fr.left = hosting ? left_at(uint32_t(sframe)) : wholes_left[sframe];
     for (int q = 0; q < players; q++) {
         Inputs in = hosting ? input_of(q, uint32_t(sframe)) : wholes[sframe][q];
         for (int i = 0; i < game.samples_per_frame; i++) {
@@ -1598,4 +1698,8 @@ void netplay::detail::lobby_end(bool play) {
         udp::close(); // a lobby that had finished (Ready) and was left all the same
     }
     in_lobby = false;
+}
+
+void netplay::leave() {
+    goodbye();
 }

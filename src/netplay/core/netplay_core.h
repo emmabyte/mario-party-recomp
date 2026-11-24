@@ -41,6 +41,13 @@ namespace netplay {
     struct Frame {
         uint8_t connected = 0;
         std::array<Sample, MAX_SAMPLES> samples{};
+        // The VIs the frame takes, 2 to 4: as many as a frame took in real time on the computer that played it (in a
+        // session, the host's; in a recording, the recorder's), for a game whose clocks and sound go by VIs to keep
+        // real time when its frames take longer than two (Game's frame_vis).
+        uint8_t vis = 2;
+        // The ports whose player has left the session (bit n: port n), whose inputs are empty from then on: the game
+        // has a computer player take their place.
+        uint8_t left = 0;
     };
 
     // A stretch of RDRAM by its KSEG0 addresses, end excluded.
@@ -73,6 +80,8 @@ namespace netplay {
         // session): RDRAM, and what the game keeps outside it that its play depends on (extra_state, which
         // set_extra_state puts back). can_snapshot says whether the game is at a frame where RDRAM and that are all
         // its state: nothing on a native stack that another copy's wouldn't have the same. Optional.
+        // The VIs that passed in real time since the last call (once a frame), for Frame's vis. Optional: 2 without it.
+        int (*frame_vis)() = nullptr;
         bool (*can_snapshot)(const uint8_t* rdram) = nullptr;
         std::vector<uint8_t> (*extra_state)() = nullptr;
         void (*set_extra_state)(const std::vector<uint8_t>& state) = nullptr;
@@ -105,6 +114,11 @@ namespace netplay {
         std::string name; // the player's, for the lobby (at most 16 bytes); empty: "Player N"
         bool resume = false; // the host's: resume the last party (party_save) rather than start a new one
     };
+    // As the program closes during a session: tells the other copies this one is leaving (the host's guests, that
+    // the session is over; the host, that a computer player takes this copy's player's place).
+    void leave();
+    // A line for the session's log (session.log) and stderr, from the game's adapter.
+    void log_line(const char* line);
     // The last party this copy played in, which a host can resume (SessionSettings' resume) if every player's copy has
     // it: false without one. Its frame is the game's, at the start of the scene it was saved at.
     bool party_save(uint64_t& frame, int& players);

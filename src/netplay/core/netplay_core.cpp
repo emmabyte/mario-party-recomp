@@ -55,7 +55,7 @@ using namespace netplay::detail;
 namespace {
     constexpr uint32_t INPUT_MAGIC = 0x504E504D; // "MPNP"
     constexpr uint32_t HASH_MAGIC = 0x484E504D;  // "MPNH"
-    constexpr uint32_t VERSION = 2;
+    constexpr uint32_t VERSION = 3;
 
     ultramodern::input::callbacks_t input_callbacks{};
     std::string path;
@@ -168,6 +168,8 @@ namespace {
                 fwrite(b, 1, 5, f);
             }
         }
+        fputc(fr.vis, f);
+        fputc(fr.left, f);
     }
 
     bool read_frame(FILE* f, Frame& fr) {
@@ -188,6 +190,16 @@ namespace {
                 p.err_no = b[4];
             }
         }
+        int vis = fgetc(f);
+        if (vis == EOF) {
+            return false;
+        }
+        fr.vis = uint8_t(std::clamp(vis, 2, 4));
+        int left = fgetc(f);
+        if (left == EOF) {
+            return false;
+        }
+        fr.left = uint8_t(left);
         return true;
     }
 
@@ -326,6 +338,7 @@ namespace {
 Frame netplay::detail::take_local_frame() {
     Frame fr;
     fr.connected = uint8_t(connected_mask);
+    fr.vis = uint8_t(game.frame_vis != nullptr ? std::clamp(game.frame_vis(), 2, 4) : 2);
     int samples = game.samples_per_frame;
     std::lock_guard lock{ samples_mutex };
     while (int(pending.size()) > samples) {
@@ -427,6 +440,11 @@ void netplay::detail::open_session_record(int player, const std::vector<uint8_t>
         fputs(said.c_str(), session_log);
         fflush(session_log);
     }
+}
+
+void netplay::log_line(const char* line) {
+    fputs(line, stderr);
+    log_session_line(line);
 }
 
 void netplay::detail::log_session_line(const char* line) {
