@@ -76,7 +76,9 @@ This repo is the game: its recompilation, the patches over it, the desktop build
   desktop too. It draws a picture wider than 4:3 with Aspect Ratio Expand: `patches/widescreen.c` takes a camera's view
   to the window's edges and `patches/background.c` a board's background, through lib/mario-party-engine's
   `camera_view.c` and `board_back.c` (their headers say how), and `us.toml`'s hooks in the sprite manager the board's
-  HUD, the players' panels, to its left and right edges, and a picture as wide as the screen stretched over the window
+  HUD, the players' panels, to its left and right edges (and Grab Bag's, Crane Game's and Bash 'n' Cash's corner HUD,
+  each player's name and coins, from hooks at the end of the function that makes it), and a picture as wide as the
+  screen stretched over the window
   wherever the game puts it (kept to 4:3 in a scene the game draws at 4:3), through lib/mario-party-engine's
   `src/hud.cpp`, and its hooks in the wipe module draw a wipe's colour (an iris's black, a fade) to them too, through
   its `src/wipe.cpp`; on a minigame's instructions screen `patches/instructions.c` carries its strips of cloud on past
