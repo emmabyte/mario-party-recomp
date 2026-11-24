@@ -28,6 +28,13 @@ if (APPLE)
     enable_language(OBJC OBJCXX)
 endif()
 
+# No fused multiply-adds anywhere in the program where the CPU has them (arm64, a Mac's), not only in the recompiled
+# game (below): online play needs every computer to compute the same floats as an x86-64 one, which never fuses.
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64" OR CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffp-contract=off")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffp-contract=off")
+endif()
+
 if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.24.0")
     cmake_policy(SET CMP0135 NEW)
 endif()
