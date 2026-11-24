@@ -391,6 +391,22 @@ text = "{ void widescreen_platform_parked(uint8_t*, recomp_context*); recomp_con
 func = "func_800FCB44_BobsledRun"
 before_vram = 0x800FCC28
 text = "ctx->r2 = 1;"
+
+# Skateboard Scamper's lava as large as a wide picture needs (patches/widescreen.c, widescreen_skate_lava): the end of
+# its camera's setup, which made the lava's model and placed it, with the object in s0. The game's registers are kept
+# around the call.
+[[patches.hook]]
+func = "func_800F8158_SkateBoardSkamper"
+before_vram = 0x800F82F8
+text = "{ void widescreen_skate_lava(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r16; widescreen_skate_lava(rdram, ctx); *ctx = saved; }"
+
+# Skateboard Scamper's goal shown from as far as a wide picture sees it (patches/widescreen.c,
+# widescreen_skate_goal_reach): the goal's frame function, as it adds the 3000 (f2) to the goal's z before it compares
+# the sum with the scroll.
+[[patches.hook]]
+func = "func_800FA3B4_SkateBoardSkamper"
+before_vram = 0x800FA400
+text = "{ void widescreen_skate_goal_reach(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_skate_goal_reach(rdram, ctx); float reach = ctx->f0.fl; *ctx = saved; ctx->f2.fl = reach; }"
 # A board's characters and props hidden once off the screen (patches/widescreen.c, widescreen_board_shown): in
 # func_8003DE60, after func_8004B730 has written the one's place on the screen at sp + 0x10, before the test loads its X.
 # The game's registers are kept around the call.
