@@ -374,7 +374,7 @@ namespace {
         }
 
         void open() {
-            // Resume Last Party, when this copy has played a party online: the game as it was at the start of the
+            // Resume Party, when this copy has played a party online: the game as it was at the start of the
             // last scene everyone reached.
             uint64_t frame = 0;
             int party_players = 0;
