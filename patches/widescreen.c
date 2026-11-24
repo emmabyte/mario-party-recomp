@@ -234,12 +234,13 @@ void widescreen_piranhas_trees(omObjData* object) {
 // camera's settled view looks down past the square's left and right sides at the top of a picture wider than 4:3, and its
 // opening turn round the stage past its edges, where the frame's clear showed black. Widening the floor would take the
 // sand ring out from under the players and the mushrooms with it, so it keeps its size, and a copy of it lies beside
-// each of its sides and corners, the grass going on at its own scale. They are a little closer together than the floor
-// is wide and a little lower, so that no gap shows between two and the game's own floor is the one drawn where they
+// each of its sides and corners, the grass going on at its own scale. Each copy is the floor mirrored across the edge it
+// shares with it (a corner's across both), so that where two meet the grass and its shading meet their own mirror image
+// and no edge shows. They are a little lower than the floor, so that the game's own floor is the one drawn where they
 // overlap, and each copy's sand ring is over 2200 from the middle, past what the camera sees. us.toml's hook calls this
 // once the setup has made the floor; nothing moves them after. They take 8 of the game's 128 forms, of which the
 // minigame uses 88.
-#define MUSHROOM_FLOOR_STEP 2860.0f
+#define MUSHROOM_FLOOR_STEP 2874.0f
 #define MUSHROOM_FLOOR_BELOW 2.0f
 
 void widescreen_musical_floor(omObjData* stage) {
@@ -260,6 +261,12 @@ void widescreen_musical_floor(omObjData* stage) {
             D_800F2B7C[copy].unk_24 = x * MUSHROOM_FLOOR_STEP;
             D_800F2B7C[copy].unk_28 = -MUSHROOM_FLOOR_BELOW;
             D_800F2B7C[copy].unk_2C = z * MUSHROOM_FLOOR_STEP;
+            if (x != 0) {
+                D_800F2B7C[copy].unk_3C = -D_800F2B7C[copy].unk_3C;
+            }
+            if (z != 0) {
+                D_800F2B7C[copy].unk_44 = -D_800F2B7C[copy].unk_44;
+            }
         }
     }
 }
