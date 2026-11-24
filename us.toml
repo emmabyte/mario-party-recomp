@@ -158,6 +158,36 @@ func = "func_800247FC"
 before_vram = 0x80025350
 text = "{ gpr mp_wipe_picture_sides(uint8_t*, gpr); ctx->r2 = mp_wipe_picture_sides(rdram, ctx->r2); }"
 
+# A minigame's instructions screen's other forms hidden while its cloud grows out of black (src/game/instructions.cpp
+# says how): where its setup has loaded the cloud (func_800F6B14_MinigameInstructions, its form's index in v0, just
+# back from LoadFormFile), where the cloud's grow and turn are over (L_800F6CFC, with or without the cloud), and in
+# each of func_800247FC's three walks of the forms, where it has loaded a form's flags (s0 the form; v0, v0 and v1 the
+# flags) and is about to test their 0x4.
+[[patches.hook]]
+func = "func_800F6B14_MinigameInstructions"
+before_vram = 0x800F6B7C
+text = "{ void mp_instructions_cloud(uint8_t*, gpr); mp_instructions_cloud(rdram, ctx->r2); }"
+
+[[patches.hook]]
+func = "func_800F6B14_MinigameInstructions"
+before_vram = 0x800F6CFC
+text = "{ void mp_instructions_cloud_end(uint8_t*); mp_instructions_cloud_end(rdram); }"
+
+[[patches.hook]]
+func = "func_800247FC"
+before_vram = 0x800248CC
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_instructions_form_flags(rdram, ctx->r2, ctx->r16); }"
+
+[[patches.hook]]
+func = "func_800247FC"
+before_vram = 0x80024BF8
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_instructions_form_flags(rdram, ctx->r2, ctx->r16); }"
+
+[[patches.hook]]
+func = "func_800247FC"
+before_vram = 0x80025228
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); ctx->r3 = mp_instructions_form_flags(rdram, ctx->r3, ctx->r16); }"
+
 # A minigame's instructions screen past 4:3 (patches/instructions.c says how): after its setup has placed and scaled
 # each of the two strips of cloud along the bottom (form 0xB000A, then 0xB000B, each in s0), a copy of it on each side.
 [[patches.hook]]
@@ -172,10 +202,17 @@ text = "{ void instructions_clouds_beside(uint8_t*, recomp_context*); ctx->r4 = 
 
 # Piranha's Pursuit's ground as wide as the picture (patches/widescreen.c, widescreen_piranhas_ground): its object's
 # frame function, with the object in s3, just before it reads the object's x scale to slide the ground's texture.
+# The slide, the scroll in f4 that it divides, is then zeroed: the ground is moved instead, as the frame function
+# returns (widescreen_piranhas_ground_placed), before s3 is given back.
 [[patches.hook]]
 func = "func_800FAEE8_PiranhasPursuit"
 before_vram = 0x800FAF48
-text = "{ void widescreen_piranhas_ground(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_ground(rdram, ctx); }"
+text = "{ void widescreen_piranhas_ground(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_ground(rdram, ctx); ctx->f4.d = 0.0; }"
+
+[[patches.hook]]
+func = "func_800FAEE8_PiranhasPursuit"
+before_vram = 0x800FB560
+text = "{ void widescreen_piranhas_ground_placed(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_ground_placed(rdram, ctx); }"
 
 # Piranha's Pursuit's trees and bushes copied a ring's width to either side (patches/widescreen.c,
 # widescreen_piranhas_trees): its setup, with the object in s3, once it has made the 14, and its object's frame
@@ -189,6 +226,13 @@ text = "{ void widescreen_piranhas_trees_copied(uint8_t*, recomp_context*); ctx-
 func = "func_800FAEE8_PiranhasPursuit"
 before_vram = 0x800FB030
 text = "{ void widescreen_piranhas_trees(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_trees(rdram, ctx); }"
+
+# Musical Mushroom's floor carried on past its edges with copies of it (patches/widescreen.c, widescreen_musical_floor):
+# its stage object's setup, with the object in s3, once it has made the floor and is about to return.
+[[patches.hook]]
+func = "func_800F9D70_MusicalMushroom"
+before_vram = 0x800F9EDC
+text = "{ void widescreen_musical_floor(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r19; widescreen_musical_floor(rdram, ctx); *ctx = saved; }"
 
 # The seas and fields widened in x as they are made (patches/widescreen.c, widen_object and widen_model): each setup once
 # its stage is made, with its model's index in v0 or its object in s1. The game's registers are kept around the
@@ -207,6 +251,21 @@ text = "{ void widescreen_bumper_sea(uint8_t*, recomp_context*); recomp_context 
 func = "func_800FA454_MushroomMixup"
 before_vram = 0x800FA4E4
 text = "{ void widescreen_mushroom_sea(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r17; widescreen_mushroom_sea(rdram, ctx); *ctx = saved; }"
+
+# Paddle Battle's river: its four water sections moved so their edges meet (patches/paddle_battle.c), once its setup
+# (func_800FBC00_PaddleBattle) has placed the last, with its object in s2. The game's registers are kept around the call.
+[[patches.hook]]
+func = "func_800FBC00_PaddleBattle"
+before_vram = 0x800FBE14
+text = "{ void paddle_battle_river_joined(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; paddle_battle_river_joined(rdram, ctx); *ctx = saved; }"
+
+# Paddle Battle's shafts of sunlight softened at their edges and ends (patches/paddle_battle.c, paddle_battle_shaft):
+# func_800FC39C_PaddleBattle, which makes each of the eight, once func_800174C0 has loaded its model (file 0x120007),
+# the model's index in v0. The game's registers are kept around the call, made between two of its instructions.
+[[patches.hook]]
+func = "func_800FC39C_PaddleBattle"
+before_vram = 0x800FC3CC
+text = "{ void paddle_battle_shaft(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r2; paddle_battle_shaft(rdram, ctx); *ctx = saved; }"
 
 # Board Movement and Map Scrolling (lib/mario-party-engine/src/board_options.cpp), Original by default.
 # Fast board movement: func_8004D6FC(player, speed) walks a player to the next space at a speed, 19.0 (0x41980000, in
@@ -269,3 +328,18 @@ text = "{ void widescreen_platform_parked(uint8_t*, recomp_context*); recomp_con
 func = "func_800F87A0_PlatformPeril"
 before_vram = 0x800F8ACC
 text = "{ void widescreen_platform_parked(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; widescreen_platform_parked(rdram, ctx); *ctx = saved; }"
+
+# A 3D model's texture clamped where its triangles' part of it ends (src/game/model_tiles.cpp says why): Crazy Cutter's
+# cones, barricades and poles had a thin dark line under them above the console's resolution, a row of the picture
+# under theirs in their texture's sheet. func_8002E488 writes a batch of a model part's triangles as the model is made,
+# after the texture they are drawn with if it is another, the batch's vertices made already (src/2C0C0.c): at its start
+# and before its last store (0x80030D1C, D_800EE32C still the batch's first vertex).
+[[patches.hook]]
+func = "func_8002E488"
+before_vram = 0x8002E488
+text = "{ void mp_model_batch_start(uint8_t*); mp_model_batch_start(rdram); }"
+
+[[patches.hook]]
+func = "func_8002E488"
+before_vram = 0x80030D1C
+text = "{ void mp_model_batch_end(uint8_t*); mp_model_batch_end(rdram); }"
