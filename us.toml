@@ -162,7 +162,8 @@ text = "{ gpr mp_wipe_picture_sides(uint8_t*, gpr); ctx->r2 = mp_wipe_picture_si
 # says how): where its setup has loaded the cloud (func_800F6B14_MinigameInstructions, its form's index in v0, just
 # back from LoadFormFile), where the cloud's grow and turn are over (L_800F6CFC, with or without the cloud), and in
 # each of func_800247FC's three walks of the forms, where it has loaded a form's flags (s0 the form; v0, v0 and v1 the
-# flags) and is about to test their 0x4.
+# flags) and is about to test their 0x4. The same three walks hide a Coin Block Blitz form scaled past 20 times
+# (src/game/coin_block_blitz.cpp says why).
 [[patches.hook]]
 func = "func_800F6B14_MinigameInstructions"
 before_vram = 0x800F6B7C
@@ -176,17 +177,17 @@ text = "{ void mp_instructions_cloud_end(uint8_t*); mp_instructions_cloud_end(rd
 [[patches.hook]]
 func = "func_800247FC"
 before_vram = 0x800248CC
-text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_instructions_form_flags(rdram, ctx->r2, ctx->r16); }"
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_coin_block_blitz_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_coin_block_blitz_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r2, ctx->r16), ctx->r16); }"
 
 [[patches.hook]]
 func = "func_800247FC"
 before_vram = 0x80024BF8
-text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_instructions_form_flags(rdram, ctx->r2, ctx->r16); }"
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_coin_block_blitz_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_coin_block_blitz_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r2, ctx->r16), ctx->r16); }"
 
 [[patches.hook]]
 func = "func_800247FC"
 before_vram = 0x80025228
-text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); ctx->r3 = mp_instructions_form_flags(rdram, ctx->r3, ctx->r16); }"
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_coin_block_blitz_form_flags(uint8_t*, gpr, gpr); ctx->r3 = mp_coin_block_blitz_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r3, ctx->r16), ctx->r16); }"
 
 # A minigame's instructions screen past 4:3 (patches/instructions.c says how): after its setup has placed and scaled
 # each of the two strips of cloud along the bottom (form 0xB000A, then 0xB000B, each in s0), a copy of it on each side.
