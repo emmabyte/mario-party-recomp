@@ -172,10 +172,17 @@ text = "{ void instructions_clouds_beside(uint8_t*, recomp_context*); ctx->r4 = 
 
 # Piranha's Pursuit's ground as wide as the picture (patches/widescreen.c, widescreen_piranhas_ground): its object's
 # frame function, with the object in s3, just before it reads the object's x scale to slide the ground's texture.
+# The slide, the scroll in f4 that it divides, is then zeroed: the ground is moved instead, as the frame function
+# returns (widescreen_piranhas_ground_placed), before s3 is given back.
 [[patches.hook]]
 func = "func_800FAEE8_PiranhasPursuit"
 before_vram = 0x800FAF48
-text = "{ void widescreen_piranhas_ground(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_ground(rdram, ctx); }"
+text = "{ void widescreen_piranhas_ground(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_ground(rdram, ctx); ctx->f4.d = 0.0; }"
+
+[[patches.hook]]
+func = "func_800FAEE8_PiranhasPursuit"
+before_vram = 0x800FB560
+text = "{ void widescreen_piranhas_ground_placed(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_ground_placed(rdram, ctx); }"
 
 # Piranha's Pursuit's trees and bushes copied a ring's width to either side (patches/widescreen.c,
 # widescreen_piranhas_trees): its setup, with the object in s3, once it has made the 14, and its object's frame

@@ -84,8 +84,11 @@ This repo is the game: its recompilation, the patches over it, the desktop build
   its `src/wipe.cpp`; on a minigame's instructions screen `patches/instructions.c` carries its strips of cloud on past
   4:3 with a copy of each on either side, and in Piranha's Pursuit `patches/widescreen.c` widens the ground, one mesh
   only a little wider than 4:3's view, and copies its trees and bushes a ring's width to each side of the 3000 the game
-  keeps them in, and in Musical Mushroom lays a copy of the floor beside each of its sides and corners, the floor with
-  its sand ring keeping its size. The board's camera stops where the wider picture reaches the map's edge (`patches/background.c`, with
+  keeps them in. RT64 carries a model's matrices and a tile's scroll on between the game's frames, but not texture
+  coordinates the game writes into vertices: that ground's texture, slid that way, stood still between them, so it is
+  moved instead, in three pieces placed where the slid texture stood (`widescreen_piranhas_ground_placed`). In Musical
+  Mushroom it lays a copy of the floor beside each of its sides and corners, the floor with its sand ring keeping its
+  size. The board's camera stops where the wider picture reaches the map's edge (`patches/background.c`, with
   the engine's `src/aspect_ratio.cpp`). A map no wider than 320 (the First Map's opening shot, 5x5 tiles) keeps black at
   its sides, the game having nothing beside it to draw, and its 3D and the HUD keep inside 4:3 with it (`board_back.c`),
   as they do in a scene the game draws at 4:3 (Chance Time, Buried Treasure, Treasure Divers, Tipsy Tourney, Deep Sea
