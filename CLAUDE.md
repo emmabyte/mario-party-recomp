@@ -85,7 +85,8 @@ This repo is the game: its recompilation, the patches over it, the desktop build
   4:3 with a copy of each on either side and `src/game/instructions.cpp` hides the players and props waiting left of
   4:3 while its cloud grows out of black, and in Piranha's Pursuit `patches/widescreen.c` widens the ground, one mesh
   only a little wider than 4:3's view, and copies its trees and bushes a ring's width to each side of the 3000 the game
-  keeps them in. RT64 carries a model's matrices and a tile's scroll on between the game's frames, but not texture
+  keeps them in, and shows its obstacles (vines, logs, boulders) out to the wider picture's edges, past the 1300 from
+  the scroll the game hides them beyond. RT64 carries a model's matrices and a tile's scroll on between the game's frames, but not texture
   coordinates the game writes into vertices: that ground's texture, slid that way, stood still between them, so it is
   moved instead, in three pieces placed where the slid texture stood (`widescreen_piranhas_ground_placed`). In Paddle Battle `patches/paddle_battle.c` fades the shafts of sunlight out at
   their sides and ends, whose quads showed hard edges (and joins the river's sections). In Musical Mushroom it lays a copy of the floor beside each of its sides and corners, the floor with its sand ring keeping its size. In Cast Aways `patches/cast_aways.c` draws the sky a twelfth taller, so it reaches the screen's top: the game put it 10 lines down, over its clear colour, a band a TV's overscan hid. The board's camera stops where the wider picture reaches the map's edge (`patches/background.c`, with
