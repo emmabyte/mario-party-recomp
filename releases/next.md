@@ -1,1 +1,2 @@
 - In Piranha's Pursuit in a wide window, the hanging vines, logs and boulders no longer appear and vanish in the picture's sides as the course scrolls: they come in and go out past the window's edges.
+- In Bash 'n' Cash, the stone floor and the foot of the walls no longer go dark for a moment when the Bowser Suit player is hit. It was a shadow the game sizes by the height of what casts it, drawn hundreds of times too big, many times bigger than the whole arena, once that rose high; it is no longer drawn then, as Coin Block Blitz's has not been since v0.2.22.

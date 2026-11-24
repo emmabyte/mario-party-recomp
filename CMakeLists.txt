@@ -249,7 +249,7 @@ target_sources(MarioPartyRecompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/src/game/survey.cpp
     ${CMAKE_SOURCE_DIR}/src/game/instructions.cpp
     ${CMAKE_SOURCE_DIR}/src/game/model_tiles.cpp
-    ${CMAKE_SOURCE_DIR}/src/game/coin_block_blitz.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/huge_forms.cpp
 )
 if (MP_PATCHES)
     target_sources(MarioPartyRecompiled PRIVATE ${CMAKE_SOURCE_DIR}/src/main/register_patches.cpp)
