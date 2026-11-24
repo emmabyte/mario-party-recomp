@@ -1,0 +1,1 @@
+- In Bobsled Run in a wide window, the purple progress bar between the two views now runs from the window's left edge to its right, with the racers' icons, the start and the finish flag spread along it. Before, it stopped at the 4:3 picture's edges, with dark gaps beside it.
