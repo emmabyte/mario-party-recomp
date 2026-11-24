@@ -329,6 +329,16 @@ func = "func_800F87A0_PlatformPeril"
 before_vram = 0x800F8ACC
 text = "{ void widescreen_platform_parked(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; widescreen_platform_parked(rdram, ctx); *ctx = saved; }"
 
+# Bobsled Run's track in both views whole. Its course is six section models, and each frame func_800FCB44 draws a
+# section only in the views (camera mask, model+0x02: 1 top, 2 bottom) of the players whose progress is inside that
+# section's range, so a section ahead appeared all at once as a sled reached it: ice walls and the cave missing, the
+# sky's dark blue in their place, at the views' sides and top corners. Every section is drawn in both views instead, the
+# mask in s2 as the loop passes it on (func_80025F10); the players' section states it also sets are left as they are.
+[[patches.hook]]
+func = "func_800FCB44_BobsledRun"
+before_vram = 0x800FCC94
+text = "ctx->r18 = 3;"
+
 # A 3D model's texture clamped where its triangles' part of it ends (src/game/model_tiles.cpp says why): Crazy Cutter's
 # cones, barricades and poles had a thin dark line under them above the console's resolution, a row of the picture
 # under theirs in their texture's sheet. func_8002E488 writes a batch of a model part's triangles as the model is made,
