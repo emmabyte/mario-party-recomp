@@ -1,1 +1,2 @@
+- In Mushroom Mix-Up in a wide window, a player who falls in and the Blooper dragging them away now swim off the side of the screen. Before, both vanished in the open sea where a 4:3 picture's edge would be.
 - In Bash 'n' Cash, the stone floor and the foot of the walls no longer go dark for a moment when the Bowser Suit player is hit. It was a shadow the game sizes by the height of what casts it, drawn hundreds of times too big, many times bigger than the whole arena, once that rose high; it is no longer drawn then, as Coin Block Blitz's has not been since v0.2.22.
