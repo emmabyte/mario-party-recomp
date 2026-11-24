@@ -121,10 +121,10 @@ before_vram = 0x800FDEAC
 text = "{ void mp_hud_side_sprites(uint8_t*, gpr, int32_t, gpr, gpr, int32_t); mp_hud_side_sprites(rdram, (gpr)(int32_t)0x800FE5D8, 20, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800ED60C), (gpr)(int32_t)0x800EE330, 0xC); }"
 
 # A screen wipe past 4:3 (lib/mario-party-engine/src/wipe.cpp says how): the wipe module's whole-screen rectangle
-# (func_800728F4(gfx, alpha), out through 0x800729C0), and a shape wipe (func_8007420C, with gfx in t0): its draws
-# (from 0x80074250, past its whole-screen rectangle for a closed shape, to its end at 0x80074C14) and its rectangles
-# around its square (from 0x80074A9C, where it has set their colour, with the square's left and right edges in t3 and
-# t4).
+# (func_800728F4(gfx, alpha), out through 0x800729C0), and a shape wipe (func_8007420C(gfx, size, alpha)): its size, a
+# float in a1, made larger as it starts for a picture wider than 4:3, and, with gfx in t0, its draws (from 0x80074250,
+# past its whole-screen rectangle for a closed shape, to its end at 0x80074C14) and its rectangles around its square
+# (from 0x80074A9C, where it has set their colour, with the square's left and right edges in t3 and t4).
 [[patches.hook]]
 func = "func_800728F4"
 before_vram = 0x800728F4
@@ -134,6 +134,11 @@ text = "{ void mp_wipe_fill_start(uint8_t*, gpr); mp_wipe_fill_start(rdram, ctx-
 func = "func_800728F4"
 before_vram = 0x800729C0
 text = "{ void mp_wipe_fill_end(uint8_t*, gpr); mp_wipe_fill_end(rdram, ctx->r4); }"
+
+[[patches.hook]]
+func = "func_8007420C"
+before_vram = 0x8007420C
+text = "{ gpr mp_wipe_shape_scale(uint8_t*, gpr); ctx->r5 = mp_wipe_shape_scale(rdram, ctx->r5); }"
 
 [[patches.hook]]
 func = "func_8007420C"
@@ -227,6 +232,35 @@ text = "{ void widescreen_piranhas_trees_copied(uint8_t*, recomp_context*); ctx-
 func = "func_800FAEE8_PiranhasPursuit"
 before_vram = 0x800FB030
 text = "{ void widescreen_piranhas_trees(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_trees(rdram, ctx); }"
+
+# Limbo Dance's scenery copied a ring's width away (patches/widescreen.c, widescreen_limbo_scenery): its sprite list's
+# setup, asked for 9 more places as it starts (the length in a0) and with them marked used once it has made them; the
+# setup once it has made the props, as it returns; the frame function once its loop has moved those that fell behind;
+# and the end of a sprite, which turns away a copy's (a0, -1 for none) so its torch's lists aren't freed twice.
+[[patches.hook]]
+func = "func_800FB93C_LimboDance"
+before_vram = 0x800FB93C
+text = "{ void widescreen_limbo_sprites(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_sprites(rdram, ctx); saved.r4 = ctx->r2; *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800FB93C_LimboDance"
+before_vram = 0x800FBAD4
+text = "{ void widescreen_limbo_sprites_made(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_sprites_made(rdram, ctx); *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800FA418_LimboDance"
+before_vram = 0x800FB004
+text = "{ void widescreen_limbo_scenery_copied(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_scenery_copied(rdram, ctx); *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800FB058_LimboDance"
+before_vram = 0x800FB250
+text = "{ void widescreen_limbo_scenery(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_scenery(rdram, ctx); *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800FDE38_LimboDance"
+before_vram = 0x800FDE38
+text = "{ void widescreen_limbo_sprite_freed(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_sprite_freed(rdram, ctx); saved.r4 = ctx->r2; *ctx = saved; }"
 
 # Musical Mushroom's floor carried on past its edges with copies of it (patches/widescreen.c, widescreen_musical_floor):
 # its stage object's setup, with the object in s3, once it has made the floor and is about to return.
@@ -339,6 +373,14 @@ func = "func_800F87A0_PlatformPeril"
 before_vram = 0x800F8ACC
 text = "{ void widescreen_platform_parked(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; widescreen_platform_parked(rdram, ctx); *ctx = saved; }"
 
+# A board's characters and props hidden once off the screen (patches/widescreen.c, widescreen_board_shown): in
+# func_8003DE60, after func_8004B730 has written the one's place on the screen at sp + 0x10, before the test loads its X.
+# The game's registers are kept around the call.
+[[patches.hook]]
+func = "func_8003DE60"
+before_vram = 0x8003DF2C
+text = "{ void widescreen_board_shown(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r29 + 0x10; widescreen_board_shown(rdram, ctx); *ctx = saved; }"
+
 # A 3D model's texture clamped where its triangles' part of it ends (src/game/model_tiles.cpp says why): Crazy Cutter's
 # cones, barricades and poles had a thin dark line under them above the console's resolution, a row of the picture
 # under theirs in their texture's sheet. func_8002E488 writes a batch of a model part's triangles as the model is made,
@@ -353,3 +395,21 @@ text = "{ void mp_model_batch_start(uint8_t*); mp_model_batch_start(rdram); }"
 func = "func_8002E488"
 before_vram = 0x80030D1C
 text = "{ void mp_model_batch_end(uint8_t*); mp_model_batch_end(rdram); }"
+
+# Cast Aways' coins, bags and chests appear and vanish past the window's edges, not 4:3's (patches/cast_aways.c):
+# the item's frame function's bounds, in f0 as it compares the item's screen x in f2 (340 moving right, -20 moving
+# left), and a new item's x, once the spawner has set the item (s2) and its work (s3), before it counts it.
+[[patches.hook]]
+func = "func_800F7A38_CastAways"
+before_vram = 0x800F7E4C
+text = "{ void cast_aways_item_gone_right(uint8_t*, recomp_context*); recomp_context c = *ctx; cast_aways_item_gone_right(rdram, &c); ctx->f0.fl = c.f0.fl; }"
+
+[[patches.hook]]
+func = "func_800F7A38_CastAways"
+before_vram = 0x800F7E68
+text = "{ void cast_aways_item_gone_left(uint8_t*, recomp_context*); recomp_context c = *ctx; cast_aways_item_gone_left(rdram, &c); ctx->f0.fl = c.f0.fl; }"
+
+[[patches.hook]]
+func = "func_800F76B8_CastAways"
+before_vram = 0x800F79BC
+text = "{ void cast_aways_item_spawned(uint8_t*, recomp_context*); recomp_context c = *ctx; c.r4 = ctx->r18; c.r5 = ctx->r19; cast_aways_item_spawned(rdram, &c); }"

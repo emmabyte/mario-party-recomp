@@ -286,6 +286,157 @@ void widescreen_piranhas_trees(omObjData* object) {
     }
 }
 
+// Limbo Dance (overlay 0x29)'s scenery along the course, the torches, the Toads, the bushes and the trees and ferns
+// behind them, is 35 props (D_800FF220_LimboDance, made in func_800FA418_LimboDance), each a form of its own, which
+// the game keeps within the course's scroll plus or minus 1050: each frame (func_800FB058_LimboDance's loop) it moves
+// one that has fallen behind the scroll minus 1050 on by 2100, so they repeat every 2100. The camera follows the
+// scroll, and a picture wider than 4:3 reached past the ring's ends, so props popped out at its left edge and in at its
+// right as the players went on. A copy of each a ring's width away, on the side away from the camera's middle, placed
+// each frame where the game's own one is, carries them on as they repeat: a prop left of the camera has its copy 2100
+// to its right, past the ring's right end, and one right of it its copy to its left. One copy each is enough as long
+// as the picture's half width at a prop's depth is under 2100. The 5 ferns in front of the course, 400 in front of it,
+// are left out: so near the camera the picture is narrower than the ring there at any width. us.toml's hooks call
+// these once the setup has made the props and after the frame's loop has moved them. The 30 copies take 30 of the
+// game's 128 forms, of which the minigame uses 91.
+#define LIMBO_PROPS 35
+#define LIMBO_RING 2100.0f
+#define LIMBO_TORCH 2
+
+typedef struct {
+    /* 0x00 */ s16 kind; // 2 a torch, with its flame and two glows
+    /* 0x02 */ char unk02[0x26];
+    /* 0x28 */ Vec3f pos;
+    /* 0x34 */ char unk34[0xC];
+    /* 0x40 */ s16 model;
+    /* 0x42 */ s16 sprite[3]; // a torch's flame and glows, in the minigame's sprites (below)
+    /* 0x48 */ char unk48[0x18];
+} LimboProp; // sizeof 0x60
+extern LimboProp* D_800FF220_LimboDance;
+
+// A torch's flame and its two glows are sprites of the minigame's own (D_80103298, a list of D_800FF1FC_LimboDance
+// made in func_800FB93C_LimboDance, 16 long, the torches' 9 the only ones it uses), which the game moves to the torch
+// as the torch moves on. The copies of the torches' have places of their own added to the end of the list, 9 more, so
+// that the game's draw (func_800FE3CC_LimboDance) makes room for each's matrix: us.toml's hook asks for them as the
+// list is made (widescreen_limbo_sprites). Each is a copy of its torch's sprite, its display lists and vertices
+// included, moved as the torch's copy is, and the game draws it as its own. Until the torch's is there, and once it
+// is gone, a copy is marked used and hidden (its first word not -1, LIMBO_SPRITE_HIDDEN), so the game never takes its
+// place for a sprite of its own. The game frees a sprite's lists and vertices when it ends one (func_800FDE38_LimboDance:
+// at the minigame's end, each), and those of a copy are its torch's, so us.toml's hook there turns a copy's away
+// (widescreen_limbo_sprite_freed).
+#define LIMBO_TORCHES 3
+#define LIMBO_SPRITE_COPIES (LIMBO_TORCHES * 3)
+#define LIMBO_SPRITE_HIDDEN 0x20
+#define LIMBO_SPRITE_WORDS (0x5C / 4)
+
+typedef struct {
+    /* 0x00 */ s32 list; // -1 when unused
+    /* 0x04 */ char unk04[0x24];
+    /* 0x28 */ u8 flags;
+    /* 0x29 */ char unk29[0xF];
+    /* 0x38 */ Vec3f pos;
+    /* 0x44 */ char unk44[0x18];
+} LimboSprite; // sizeof 0x5C
+extern LimboSprite* D_80103298;
+
+static s16 limbo_copies[LIMBO_PROPS];
+static s32 limbo_sprites; // the list's own length, the copies' after it
+
+s32 widescreen_limbo_sprites(s32 length) {
+    limbo_sprites = length & 0xFF;
+    return limbo_sprites + LIMBO_SPRITE_COPIES;
+}
+
+static void limbo_sprite_hidden(LimboSprite* sprite) {
+    sprite->list = 0;
+    sprite->flags = LIMBO_SPRITE_HIDDEN;
+}
+
+void widescreen_limbo_sprites_made(void) {
+    s32 i;
+
+    for (i = 0; i < LIMBO_SPRITE_COPIES; i++) {
+        limbo_sprite_hidden(&D_80103298[limbo_sprites + i]);
+    }
+}
+
+s32 widescreen_limbo_sprite_freed(s32 index) {
+    s16 sprite = index;
+
+    if (sprite >= limbo_sprites && sprite < limbo_sprites + LIMBO_SPRITE_COPIES) {
+        limbo_sprite_hidden(&D_80103298[sprite]);
+        return -1;
+    }
+    return index;
+}
+
+void widescreen_limbo_scenery_copied(void) {
+    s32 i;
+
+    for (i = 0; i < LIMBO_PROPS; i++) {
+        LimboProp* prop = &D_800FF220_LimboDance[i];
+
+        limbo_copies[i] = -1;
+        if (prop->model != 0 && prop->pos.z < 0.0f) {
+            limbo_copies[i] = func_80023FC8(prop->model);
+        }
+    }
+}
+
+static void limbo_sprite_copied(s16 index, s32 place, f32 shift) {
+    LimboSprite* copy = &D_80103298[limbo_sprites + place];
+    u32* to = (u32*) copy;
+    u32* from;
+    s32 i;
+
+    if (index < 0 || index >= limbo_sprites || D_80103298[index].list == -1) {
+        limbo_sprite_hidden(copy);
+        return;
+    }
+    from = (u32*) &D_80103298[index];
+    for (i = 0; i < LIMBO_SPRITE_WORDS; i++) {
+        to[i] = from[i];
+    }
+    copy->pos.x += shift;
+}
+
+void widescreen_limbo_scenery(void) {
+    s32 torch = 0;
+    s32 i;
+    s32 k;
+
+    for (i = 0; i < LIMBO_PROPS; i++) {
+        LimboProp* prop = &D_800FF220_LimboDance[i];
+        f32 shift = prop->pos.x < Center.x ? LIMBO_RING : -LIMBO_RING;
+        unk_ovl_2D_struct* own;
+        unk_ovl_2D_struct* copy;
+
+        if (prop->kind == LIMBO_TORCH && torch < LIMBO_TORCHES) {
+            for (k = 0; k < 3; k++) {
+                if (limbo_copies[i] < 0) {
+                    limbo_sprite_hidden(&D_80103298[limbo_sprites + torch * 3 + k]);
+                } else {
+                    limbo_sprite_copied(prop->sprite[k], torch * 3 + k, shift);
+                }
+            }
+            torch++;
+        }
+        if (limbo_copies[i] < 0) {
+            continue;
+        }
+        own = &D_800F2B7C[prop->model];
+        copy = &D_800F2B7C[limbo_copies[i]];
+        copy->unk_24 = own->unk_24 + shift;
+        copy->unk_28 = own->unk_28;
+        copy->unk_2C = own->unk_2C;
+        copy->unk_30 = own->unk_30;
+        copy->unk_34 = own->unk_34;
+        copy->unk_38 = own->unk_38;
+        copy->unk_3C = own->unk_3C;
+        copy->unk_40 = own->unk_40;
+        copy->unk_44 = own->unk_44;
+    }
+}
+
 // Musical Mushroom (overlay 0x0B)'s floor, the grass and the sand ring the players run round on, is one model, its
 // stage object's (file 0x1D0000, made in func_800F9D70_MusicalMushroom), a square about 2880 wide on the origin. The
 // camera's settled view looks down past the square's left and right sides at the top of a picture wider than 4:3, and its
@@ -388,6 +539,28 @@ void widescreen_platform_parked(omObjData* platform) {
             platform_parked_near(model->unk_2C)) {
             func_800258EC(index, 4, 4);
         }
+    }
+}
+
+// A board's characters and props (the players, a Koopa by the path) are hidden once they're off the
+// screen: func_8003DE60 (src/3E560.c) projects each one's place onto the 320 by 240 screen, the board's pan and all
+// (func_8004B730), and hides its models past X 370 or -50, Y 290 or -20, 4:3's edges and 50 units more, so that one
+// whose middle has just left the screen still shows the half of it that hasn't. A wider picture reaches past 4:3's
+// sides by 120 times its aspect less 160 units (53 at 16:9), so one was hidden while it still showed at the window's
+// sides, a third of a Koopa there one frame and nothing the next. us.toml's hook calls this with the projected place
+// between the projection and the test: its X moved toward the middle by as far as the window reaches past 4:3's
+// edges, so it is hidden 50 units past the window's, and at 4:3 left where it was. Not past the middle, which the test
+// never hides.
+void widescreen_board_shown(f32* screen) {
+    f32 past = 120.0f * mp_aspect_ratio() - 160.0f;
+
+    if (past <= 0.0f) {
+        return;
+    }
+    if (screen[0] > 160.0f) {
+        screen[0] = (screen[0] - past > 160.0f) ? screen[0] - past : 160.0f;
+    } else {
+        screen[0] = (screen[0] + past < 160.0f) ? screen[0] + past : 160.0f;
     }
 }
 
