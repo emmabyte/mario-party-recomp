@@ -118,6 +118,10 @@ set(RT64_SCISSOR_INSIDE_FRAMEBUFFER ON)
 # at a choice in Mushroom Village's houses, one 24-pixel rect, slid to its place a game frame at a time, 30 steps a
 # second, while the room turned to it at the display's rate.
 set(RT64_INTERPOLATE_RECT_SCROLLS ON)
+# A decal passes within the RDP's depth tolerance of the surface under it (RT64_RDP_DECAL_TOLERANCE), 2 to 4 times its
+# depth's slope where RT64 passes 1: Coin Block Blitz puts its ? blocks' square shadows a little above the ground, 1.1
+# to 4 times its slope, and RT64 drew none of them but half of one.
+set(RT64_RDP_DECAL_TOLERANCE ON)
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/rt64 ${CMAKE_BINARY_DIR}/rt64)
 
 set(BUILD_SHARED_LIBS OFF)
@@ -245,6 +249,7 @@ target_sources(MarioPartyRecompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/src/game/survey.cpp
     ${CMAKE_SOURCE_DIR}/src/game/instructions.cpp
     ${CMAKE_SOURCE_DIR}/src/game/model_tiles.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/coin_block_blitz.cpp
 )
 if (MP_PATCHES)
     target_sources(MarioPartyRecompiled PRIVATE ${CMAKE_SOURCE_DIR}/src/main/register_patches.cpp)
