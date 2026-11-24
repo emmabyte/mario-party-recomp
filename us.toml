@@ -227,6 +227,13 @@ func = "func_800FAEE8_PiranhasPursuit"
 before_vram = 0x800FB030
 text = "{ void widescreen_piranhas_trees(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_trees(rdram, ctx); }"
 
+# Musical Mushroom's floor carried on past its edges with copies of it (patches/widescreen.c, widescreen_musical_floor):
+# its stage object's setup, with the object in s3, once it has made the floor and is about to return.
+[[patches.hook]]
+func = "func_800F9D70_MusicalMushroom"
+before_vram = 0x800F9EDC
+text = "{ void widescreen_musical_floor(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r19; widescreen_musical_floor(rdram, ctx); *ctx = saved; }"
+
 # The seas and fields widened in x as they are made (patches/widescreen.c, widen_object and widen_model): each setup once
 # its stage is made, with its model's index in v0 or its object in s1. The game's registers are kept around the
 # call, which is made between two of its instructions.
@@ -251,6 +258,14 @@ text = "{ void widescreen_mushroom_sea(uint8_t*, recomp_context*); recomp_contex
 func = "func_800FBC00_PaddleBattle"
 before_vram = 0x800FBE14
 text = "{ void paddle_battle_river_joined(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; paddle_battle_river_joined(rdram, ctx); *ctx = saved; }"
+
+# Paddle Battle's shafts of sunlight softened at their edges and ends (patches/paddle_battle.c, paddle_battle_shaft):
+# func_800FC39C_PaddleBattle, which makes each of the eight, once func_800174C0 has loaded its model (file 0x120007),
+# the model's index in v0. The game's registers are kept around the call, made between two of its instructions.
+[[patches.hook]]
+func = "func_800FC39C_PaddleBattle"
+before_vram = 0x800FC3CC
+text = "{ void paddle_battle_shaft(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r2; paddle_battle_shaft(rdram, ctx); *ctx = saved; }"
 
 # Board Movement and Map Scrolling (lib/mario-party-engine/src/board_options.cpp), Original by default.
 # Fast board movement: func_8004D6FC(player, speed) walks a player to the next space at a speed, 19.0 (0x41980000, in
