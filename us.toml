@@ -215,6 +215,13 @@ func = "func_800FA454_MushroomMixup"
 before_vram = 0x800FA4E4
 text = "{ void widescreen_mushroom_sea(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r17; widescreen_mushroom_sea(rdram, ctx); *ctx = saved; }"
 
+# Paddle Battle's river: its four water sections moved so their edges meet (patches/paddle_battle.c), once its setup
+# (func_800FBC00_PaddleBattle) has placed the last, with its object in s2. The game's registers are kept around the call.
+[[patches.hook]]
+func = "func_800FBC00_PaddleBattle"
+before_vram = 0x800FBE14
+text = "{ void paddle_battle_river_joined(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; paddle_battle_river_joined(rdram, ctx); *ctx = saved; }"
+
 # Paddle Battle's shafts of sunlight softened at their edges and ends (patches/paddle_battle.c, paddle_battle_shaft):
 # func_800FC39C_PaddleBattle, which makes each of the eight, once func_800174C0 has loaded its model (file 0x120007),
 # the model's index in v0. The game's registers are kept around the call, made between two of its instructions.
