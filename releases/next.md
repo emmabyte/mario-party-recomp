@@ -1,1 +1,0 @@
-- In Piranha's Pursuit, the dirt track and the grass and bushes behind the ferns now scroll smoothly at your display's frame rate, together with the trees and ferns. Before, they moved only 30 times a second while everything else moved every frame, so they jittered against the trees.
