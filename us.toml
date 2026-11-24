@@ -253,6 +253,15 @@ func = "func_800FA454_MushroomMixup"
 before_vram = 0x800FA4E4
 text = "{ void widescreen_mushroom_sea(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r17; widescreen_mushroom_sea(rdram, ctx); *ctx = saved; }"
 
+# Mushroom Mixup's Bloopers hidden past the picture's edge rather than 4:3's (patches/widescreen.c,
+# widescreen_blooper_gone): the Blooper's frame function, the object in s2 and its player in s3, where both of its
+# measures of x against 1000 or -1000 meet with v1 1 if past it, before it reads v1 to hide the two. v1 is given the
+# patch's answer and the game's other registers are kept.
+[[patches.hook]]
+func = "func_800FB238_MushroomMixup"
+before_vram = 0x800FB9E8
+text = "{ void widescreen_blooper_gone(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; ctx->r5 = ctx->r19; ctx->r6 = ctx->r3; widescreen_blooper_gone(rdram, ctx); saved.r3 = ctx->r2; *ctx = saved; }"
+
 # Paddle Battle's river: its four water sections moved so their edges meet (patches/paddle_battle.c), once its setup
 # (func_800FBC00_PaddleBattle) has placed the last, with its object in s2. The game's registers are kept around the call.
 [[patches.hook]]
@@ -329,6 +338,14 @@ text = "{ void widescreen_platform_parked(uint8_t*, recomp_context*); recomp_con
 func = "func_800F87A0_PlatformPeril"
 before_vram = 0x800F8ACC
 text = "{ void widescreen_platform_parked(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; widescreen_platform_parked(rdram, ctx); *ctx = saved; }"
+
+# A board's characters and props hidden once off the screen (patches/widescreen.c, widescreen_board_shown): in
+# func_8003DE60, after func_8004B730 has written the one's place on the screen at sp + 0x10, before the test loads its X.
+# The game's registers are kept around the call.
+[[patches.hook]]
+func = "func_8003DE60"
+before_vram = 0x8003DF2C
+text = "{ void widescreen_board_shown(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r29 + 0x10; widescreen_board_shown(rdram, ctx); *ctx = saved; }"
 
 # A 3D model's texture clamped where its triangles' part of it ends (src/game/model_tiles.cpp says why): Crazy Cutter's
 # cones, barricades and poles had a thin dark line under them above the console's resolution, a row of the picture
