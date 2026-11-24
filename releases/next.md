@@ -1,1 +1,2 @@
 - On the boards in a wide window, characters and props (the players, the Koopa by the path) no longer vanish while still partly on screen at the left and right edges as the camera moves. They are now hidden only once they are fully past the window's edges, as they are past 4:3's on a console.
+- In Mushroom Mix-Up in a wide window, a player who falls in and the Blooper dragging them away now swim off the side of the screen. Before, both vanished in the open sea where a 4:3 picture's edge would be.
