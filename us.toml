@@ -208,6 +208,13 @@ func = "func_800FA454_MushroomMixup"
 before_vram = 0x800FA4E4
 text = "{ void widescreen_mushroom_sea(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r17; widescreen_mushroom_sea(rdram, ctx); *ctx = saved; }"
 
+# Paddle Battle's river: its four water sections moved so their edges meet (patches/paddle_battle.c), once its setup
+# (func_800FBC00_PaddleBattle) has placed the last, with its object in s2. The game's registers are kept around the call.
+[[patches.hook]]
+func = "func_800FBC00_PaddleBattle"
+before_vram = 0x800FBE14
+text = "{ void paddle_battle_river_joined(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; paddle_battle_river_joined(rdram, ctx); *ctx = saved; }"
+
 # Board Movement and Map Scrolling (lib/mario-party-engine/src/board_options.cpp), Original by default.
 # Fast board movement: func_8004D6FC(player, speed) walks a player to the next space at a speed, 19.0 (0x41980000, in
 # a1) from all three of its callers (func_8005727C's walk, func_8005C834's and FirstMap's), at twice that, 38.0.
