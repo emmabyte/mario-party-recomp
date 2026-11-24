@@ -541,3 +541,25 @@ void widescreen_platform_parked(omObjData* platform) {
         }
     }
 }
+
+// Mushroom Mixup's Bloopers: a player who falls in is dragged off by one (func_800FB238_MushroomMixup, its frame
+// function, one each of two objects), which swims out to the side the player fell on and is hidden with the player
+// once past x 1000 or -1000, just off a 4:3 picture's edge: in a wider one both vanished in the sea short of the
+// window's sides. us.toml's hook calls this where the game has measured that, with the Blooper object, its player and
+// whether it is past 1000 (the game's own answer): the player's bit in D_800FC8A0, which the mushrooms and the round
+// wait on to go on, is cleared there as the game would, and the Blooper and the player are hidden only once past the
+// game's 1000 as many times farther out as the picture is wider than 4:3. A Blooper is the game's to give again once
+// hidden, so while another player who fell in waits for one (a bit in D_800FC9A0, which a Blooper clears as it takes
+// its player) it is hidden at 1000, as the game does, and that player's drag starts no later than before.
+extern u16 D_800FC8A0_MushroomMixup;
+extern u16 D_800FC9A0_MushroomMixup;
+
+s32 widescreen_blooper_gone(omObjData* blooper, s32 player, s32 past_4x3) {
+    f32 edge = 1000.0f * mp_aspect_ratio() * (3.0f / 4.0f);
+
+    if (!past_4x3) {
+        return 0;
+    }
+    D_800FC8A0_MushroomMixup &= ~(1 << player);
+    return (D_800FC9A0_MushroomMixup != 0) || (blooper->trans.x >= edge) || (blooper->trans.x <= -edge);
+}
