@@ -1,1 +1,0 @@
-- In Platform Peril in a wide window, pieces of the starting platform and of the path that have fallen away no longer pop in and out at the bottom left of the picture as the camera moves along. On a console they are just outside the picture; they are now hidden once they have fallen.
