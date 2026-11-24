@@ -383,9 +383,11 @@ text = "{ void widescreen_board_shown(uint8_t*, recomp_context*); recomp_context
 
 # A 3D model's texture clamped where its triangles' part of it ends (src/game/model_tiles.cpp says why): Crazy Cutter's
 # cones, barricades and poles had a thin dark line under them above the console's resolution, a row of the picture
-# under theirs in their texture's sheet. func_8002E488 writes a batch of a model part's triangles as the model is made,
-# after the texture they are drawn with if it is another, the batch's vertices made already (src/2C0C0.c): at its start
-# and before its last store (0x80030D1C, D_800EE32C still the batch's first vertex).
+# under theirs in their texture's sheet. And where a part's textures meet, their texels at the join are evened, so
+# Board Selection's board pictures, four textures each, show no line across them. func_8002E488 writes a batch of a
+# model part's triangles as the model is made, after the texture they are drawn with if it is another, the batch's
+# vertices made already (src/2C0C0.c): at its start and before its last store (0x80030D1C, D_800EE32C still the
+# batch's first vertex).
 [[patches.hook]]
 func = "func_8002E488"
 before_vram = 0x8002E488

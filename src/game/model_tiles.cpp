@@ -1,4 +1,5 @@
-// A 3D model's texture clamped where its triangles' part of it ends (us.toml's hooks in func_8002E488 say where).
+// A 3D model's texture clamped where its triangles' part of it ends, and a part's textures evened where they meet
+// (us.toml's hooks in func_8002E488 say where).
 //
 // The model builder (src/2C0C0.c's func_8002E488) writes a batch of a part's triangles after the texture they are
 // drawn with, its tile clamped at the texture's edges. Some models' textures are sheets of pictures stacked one under
