@@ -386,6 +386,10 @@ bool mp_netplay::active() {
     return netplay::mode() == netplay::Mode::Session;
 }
 
+static bool can_snapshot(const uint8_t* rdram);
+static std::vector<uint8_t> extra_state();
+static void set_extra_state(const std::vector<uint8_t>& in);
+
 void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const std::string& version) {
     build_version = version;
     parse_minigames(getenv("MP_NETPLAY_MINIGAMES"));
@@ -399,6 +403,9 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
         static std::string folder = (recomp::get_config_path() / "netplay").string();
         return folder;
     };
+    game.can_snapshot = can_snapshot;
+    game.extra_state = extra_state;
+    game.set_extra_state = set_extra_state;
     game.save = host_save;
     game.use_save = use_host_save;
     // A window that waits for the player, but for the tests, where no one would close it (MP_NETPLAY_NO_MESSAGES).
@@ -567,6 +574,103 @@ extern "C" int mp_netplay_vi_client(uint8_t* rdram, gpr queue, gpr message) {
     return netplay::active() && uint32_t(queue) == AUDIO_QUEUE && uint32_t(message) == 1;
 }
 
+std::vector<uint32_t> mp_prc_started();
+std::vector<uint32_t> mp_overlays_loaded();
+void mp_overlays_reload(const std::vector<uint32_t>& triples);
+void save_read(uint8_t* rdram, PTR(void) rdram_address, uint32_t offset, uint32_t count);
+void save_write_ptr(const void* in, uint32_t offset, uint32_t count);
+static int prc_survey_left = 0;
+
+// A snapshot of the game (netplay_core.h's Game): safe at a frame where no process has run but the three the game keeps
+// for good (gameman.c's, each a loop that sleeps a frame at a time, the same on every copy), as for a few frames as each
+// scene starts: every other process's state is all in RDRAM then. What the game keeps outside RDRAM that its play reads:
+// the overlays loaded (which code the runtime runs at an address), the EEPROM, and the sound's retraces owed.
+static bool is_kept_process(uint32_t func) {
+    return func == 0x8001A3DC || func == 0x8001A428 || func == 0x8001A454;
+}
+
+static bool can_snapshot(const uint8_t* rdram) {
+    std::vector<uint32_t> started = mp_prc_started();
+    int alive = 0;
+    for (uint32_t p = read_word(rdram, 0x800E23CC); p != 0 && alive < 256; p = read_word(rdram, p)) {
+        alive++;
+        if (!is_kept_process(read_word(rdram, p + 0x30)) &&
+                std::find(started.begin(), started.end(), p) != started.end()) {
+            return false;
+        }
+    }
+    return loader_sending == 0;
+}
+
+static std::vector<uint8_t> extra_state() {
+    std::vector<uint8_t> out;
+    auto put = [&](uint32_t v) {
+        for (int i = 0; i < 4; i++) out.push_back(uint8_t(v >> (8 * i)));
+    };
+    std::vector<uint32_t> overlays = mp_overlays_loaded();
+    put(uint32_t(overlays.size()));
+    for (uint32_t v : overlays) put(v);
+    std::vector<uint8_t> eeprom(SAVE_SIZE);
+    std::vector<uint8_t> swapped(SAVE_SIZE);
+    save_read(swapped.data(), (PTR(void))0x80000000, 0, uint32_t(SAVE_SIZE)); // MEM_B's byte order: i ^ 3
+    for (size_t i = 0; i < SAVE_SIZE; i++) eeprom[i] = swapped[i ^ 3];
+    put(uint32_t(eeprom.size()));
+    out.insert(out.end(), eeprom.begin(), eeprom.end());
+    put(uint32_t(audio_borrowed));
+    // The tests' list of minigames (MP_NETPLAY_MINIGAMES): how far it has got.
+    put(uint32_t(next_minigame));
+    put(current_minigame != nullptr ? uint32_t(current_minigame - minigames.data()) : UINT32_MAX);
+    return out;
+}
+
+static void set_extra_state(const std::vector<uint8_t>& in) {
+    size_t at = 0;
+    auto take = [&]() {
+        uint32_t v = 0;
+        for (int i = 0; i < 4 && at < in.size(); i++) v |= uint32_t(in[at++]) << (8 * i);
+        return v;
+    };
+    std::vector<uint32_t> overlays(take());
+    for (uint32_t& v : overlays) v = take();
+    mp_overlays_reload(overlays);
+    uint32_t eeprom_size = take();
+    if (eeprom_size == SAVE_SIZE && at + eeprom_size <= in.size()) {
+        save_write_ptr(in.data() + at, 0, eeprom_size);
+        at += eeprom_size;
+    }
+    audio_borrowed = int(take());
+    next_minigame = take();
+    uint32_t current = take();
+    current_minigame = current < minigames.size() ? &minigames[current] : nullptr;
+}
+
+// MP_NETPLAY_PRC_SURVEY: for the first frames of each scene, the processes alive, and which of them have started
+// (their state is on a native stack, not only in RDRAM), past the three the game keeps for good (gameman.c's).
+static void prc_survey(uint8_t* rdram) {
+    static const bool on = getenv("MP_NETPLAY_PRC_SURVEY") != nullptr;
+    if (!on || prc_survey_left <= 0) {
+        return;
+    }
+    prc_survey_left--;
+    std::vector<uint32_t> started = mp_prc_started();
+    std::string line;
+    int alive = 0, ran = 0;
+    for (uint32_t p = uint32_t(MEM_W(0, (int32_t)0x800E23CC)); p != 0 && alive < 64; p = uint32_t(MEM_W(0, (int32_t)p))) {
+        uint32_t func = uint32_t(MEM_W(0x2C + 4, (int32_t)p));
+        alive++;
+        bool persistent = func == 0x8001A3DC || func == 0x8001A428 || func == 0x8001A454;
+        bool has = std::find(started.begin(), started.end(), p) != started.end();
+        if (has && !persistent) {
+            ran++;
+            char item[24];
+            snprintf(item, sizeof(item), " %08X", func);
+            line += item;
+        }
+    }
+    fprintf(stderr, "[netplay] frame %" PRIu64 ": %d processes, %d started past the 3 kept:%s\n", netplay::frame(),
+            alive, ran, line.c_str());
+}
+
 // The hook at func_80013E84's start, once a frame on the main thread: while netplay runs, steps the sound driver, hands
 // RDRAM to netplay and fills the game's ring with the frame's inputs, which the game's own func_80013E84 then reads.
 extern "C" void mp_netplay_pad_frame(uint8_t* rdram, recomp_context* ctx) {
@@ -575,6 +679,7 @@ extern "C" void mp_netplay_pad_frame(uint8_t* rdram, recomp_context* ctx) {
     }
 
     step_audio(rdram, ctx);
+    prc_survey(rdram);
 
     // Each scene the session plays, as omOvlGotoEx last went to it (D_800F09F4: a board, a minigame, a menu, by the
     // decomp's overlay numbers), so a log shows what a recording covered.
@@ -582,6 +687,7 @@ extern "C" void mp_netplay_pad_frame(uint8_t* rdram, recomp_context* ctx) {
     if (MEM_W(0, (int32_t)0x800F09F4) != overlay) {
         overlay = MEM_W(0, (int32_t)0x800F09F4);
         fprintf(stderr, "[netplay] frame %" PRIu64 ": overlay 0x%02X\n", netplay::frame(), uint32_t(overlay));
+        prc_survey_left = 20;
     }
 
     step_minigames(rdram);

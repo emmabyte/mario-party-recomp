@@ -88,6 +88,21 @@ endif()
 include(${CMAKE_SOURCE_DIR}/lib/N64Recomp-browser/patches/apply.cmake)
 n64recomp_browser_apply_patches(${CMAKE_SOURCE_DIR}/lib)
 
+# lib-patches/mario-party-engine: this fork's changes to lib/mario-party-engine (the netplay snapshot's list of the
+# processes that have started), applied to the checkout until they are the engine's own; one already applied is left.
+file(GLOB MP_ENGINE_PATCHES ${CMAKE_SOURCE_DIR}/lib-patches/mario-party-engine/*.patch)
+foreach(patch ${MP_ENGINE_PATCHES})
+    execute_process(COMMAND git apply --reverse --check ${patch}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/lib/mario-party-engine RESULT_VARIABLE applied OUTPUT_QUIET ERROR_QUIET)
+    if (NOT applied EQUAL 0)
+        execute_process(COMMAND git apply ${patch}
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/lib/mario-party-engine RESULT_VARIABLE failed)
+        if (NOT failed EQUAL 0)
+            message(FATAL_ERROR "${patch} doesn't apply to lib/mario-party-engine")
+        endif()
+    endif()
+endforeach()
+
 # The engine draws a frame in several RSP tasks (one a camera, the board's sprites and text in a later one), which RT64
 # interpolates as one game frame with RT64_GAME_FRAME_WORKLOADS, on with Emscripten and here on the desktop too: each
 # task interpolated as a frame of its own drew frames between the game's from the first tasks alone, without the HUD,

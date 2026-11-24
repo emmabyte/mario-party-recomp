@@ -69,6 +69,13 @@ namespace netplay {
         // Where a session keeps its record (its inputs, hashes, the host's save and its log), for a desync to be
         // replayed and traced later: a folder of the player's. Optional.
         std::string (*data_folder)() = nullptr;
+        // A snapshot of the game, for a copy to take up a session where another is (a rejoin, a resync, a saved
+        // session): RDRAM, and what the game keeps outside it that its play depends on (extra_state, which
+        // set_extra_state puts back). can_snapshot says whether the game is at a frame where RDRAM and that are all
+        // its state: nothing on a native stack that another copy's wouldn't have the same. Optional.
+        bool (*can_snapshot)(const uint8_t* rdram) = nullptr;
+        std::vector<uint8_t> (*extra_state)() = nullptr;
+        void (*set_extra_state)(const std::vector<uint8_t>& state) = nullptr;
     };
 
     enum class Mode { Off, Record, Replay, Session };

@@ -144,3 +144,17 @@ Mayhem, Mario Bandstand), and once they are played the trips go to the rules' bo
 
 The list is the test's, the same for the recording and the replays; a session between players goes where the game
 goes.
+
+## Snapshots
+
+A snapshot is the game at a frame, for a copy to take up and play on from: RDRAM and the patches' memory past it
+(16 MB), the overlays loaded, the EEPROM, and what of the game the runtime keeps natively (`mario_party.cpp`'s
+`extra_state`). It can be taken only where all of the game's state is in them: in the first frames of a scene, before
+any of its processes has started (`can_snapshot`), since a process that has run keeps its locals on a native thread's
+stack. Each thread's native context stays the taking copy's own. `MP_NETPLAY_SNAPSHOT=<n>` in a replay writes one at
+frame n, and `MP_NETPLAY_RESTORE=<file>` in a replay of the same recording takes it up at the first frame it can (the
+fourth after power-on) and replays on from there: a 12,000-frame recording taken up at two of its hub's scenes played
+on to its end with every frame matching.
+
+Which processes have started is the engine's to say (`mp_prc_started`): until lib/mario-party-engine has it,
+`lib-patches/mario-party-engine/` holds the change, and the build applies it to the checkout.

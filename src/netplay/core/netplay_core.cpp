@@ -16,6 +16,9 @@
 // - For either: MP_NETPLAY_DELAY (frames of input delay, 3 by default), MP_NETPLAY_FRAMES (ends the session after
 //   that many frames, for tests), MP_NETPLAY_TIMEOUT_MS (how long a frame waits for a silent player, 15000) and
 //   MP_NETPLAY_DROP (a share of packets to drop, in percent, to test a lossy link).
+// - MP_NETPLAY_SNAPSHOT=<n>[,<n>...]: writes a snapshot of the game (Game's can_snapshot) at each frame n to
+//   <file>.frame<n>.snap. MP_NETPLAY_RESTORE=<snap>, in a replay: at the first frame the game can take one at (from
+//   the fourth), takes up the snapshot's frame in its place and replays on from there, to test that it plays alike.
 // - MP_NETPLAY_TEST_POKE=<frame>:<hex address>: changes RDRAM there at that frame, a desync for the tests.
 // - MP_NETPLAY_NO_MESSAGES=1: a session that ends for a reason only prints it, with no window for the player to close
 //   (for tests; src/netplay/mario_party.cpp).
@@ -519,7 +522,123 @@ bool netplay::sample_pads() {
     return true;
 }
 
+// A snapshot (Game's can_snapshot): "MPSS", a version, the frame, the game's extra state, then RDRAM.
+namespace {
+    constexpr uint32_t SNAP_MAGIC = 0x5353504D; // "MPSS"
+    constexpr uint32_t SNAP_VERSION = 2;
+    // RDRAM and the 8 MB past it the recomp gives its patches (patches/patches.ld), whose data is the game's too.
+    constexpr size_t SNAP_SIZE = 16 * 1024 * 1024;
+    std::vector<int64_t> snapshot_frames;
+    std::string restore_path;
+    bool restored = false;
+
+    void write_snapshot(const uint8_t* rdram) {
+        std::string out = (path.empty() ? std::string("netplay") : path) + ".frame" + std::to_string(frame_no) + ".snap";
+        FILE* f = fopen(out.c_str(), "wb");
+        if (f == nullptr) {
+            fprintf(stderr, "[netplay] can't write %s\n", out.c_str());
+            return;
+        }
+        std::vector<uint8_t> extra = game.extra_state != nullptr ? game.extra_state() : std::vector<uint8_t>{};
+        write_u32(f, SNAP_MAGIC);
+        write_u32(f, SNAP_VERSION);
+        write_u64(f, frame_no);
+        write_u32(f, uint32_t(extra.size()));
+        fwrite(extra.data(), 1, extra.size(), f);
+        fwrite(rdram, 1, SNAP_SIZE, f);
+        fclose(f);
+        bool safe = game.can_snapshot != nullptr && game.can_snapshot(rdram);
+        fprintf(stderr, "[netplay] wrote a snapshot of frame %" PRIu64 " to %s%s\n", frame_no, out.c_str(),
+                safe ? "" : " (at a frame the game says isn't safe to)");
+    }
+
+    // MP_NETPLAY_RESTORE, in a replay: at the first frame the game can take a snapshot at and take this one up, puts
+    // the snapshot's frame in place of this one, and the replay goes on from its frame.
+    struct Snapshot {
+        uint64_t frame = 0;
+        std::vector<uint8_t> extra, ram;
+    };
+    Snapshot to_restore;
+
+    bool read_snapshot(const std::string& file, Snapshot& out) {
+        FILE* f = fopen(file.c_str(), "rb");
+        uint32_t magic = 0, version = 0, extra_size = 0;
+        if (f == nullptr || !read_u32(f, magic) || !read_u32(f, version) || magic != SNAP_MAGIC || version != SNAP_VERSION ||
+                !read_u64(f, out.frame) || !read_u32(f, extra_size)) {
+            if (f != nullptr) fclose(f);
+            return false;
+        }
+        out.extra.resize(extra_size);
+        out.ram.resize(SNAP_SIZE);
+        bool whole = fread(out.extra.data(), 1, extra_size, f) == extra_size && fread(out.ram.data(), 1, SNAP_SIZE, f) == SNAP_SIZE;
+        fclose(f);
+        return whole;
+    }
+
+    void take_up(uint8_t* rdram, const Snapshot& snap) {
+        // The runtime keeps a native pointer in each of the game's threads (ultramodern's OSThread: its context, 8 bytes
+        // at +0x20), which is this copy's and no other's: it stays as this copy has it, in each thread both copies
+        // have (the same priority and id, and a pointer there in both).
+        const uint8_t* ram = snap.ram.data();
+        auto word = [](const uint8_t* m, size_t at) { uint32_t w; memcpy(&w, m + at, 4); return w; };
+        auto host_pointer = [&](const uint8_t* m, size_t at) {
+            uint32_t hi = word(m, at + 4);
+            return hi >= 0x00005000u && hi < 0x00008000u;
+        };
+        std::vector<std::pair<size_t, uint64_t>> keep;
+        for (size_t at = 0; at + 0x28 <= SNAP_SIZE; at += 8) {
+            size_t context = at + 0x20;
+            if (host_pointer(rdram, context) && host_pointer(ram, context) && word(rdram, at + 0x14) == word(ram, at + 0x14) &&
+                    word(rdram, at + 0x04) == word(ram, at + 0x04) && word(rdram, at + 0x04) < 256) {
+                uint64_t v;
+                memcpy(&v, rdram + context, 8);
+                keep.emplace_back(context, v);
+            }
+        }
+        memcpy(rdram, ram, SNAP_SIZE);
+        for (const auto& [at, v] : keep) {
+            memcpy(rdram + at, &v, 8);
+        }
+        if (game.set_extra_state != nullptr) {
+            game.set_extra_state(snap.extra);
+        }
+        fprintf(stderr, "[netplay] frame %" PRIu64 ": took up frame %" PRIu64 " (%zu threads' native contexts kept)\n",
+                frame_no, snap.frame, keep.size());
+        frame_no = snap.frame;
+    }
+}
+
 Frame netplay::advance(uint8_t* rdram) {
+    if (frame_no == 0) {
+        if (const char* s = getenv("MP_NETPLAY_SNAPSHOT")) {
+            for (const char* p = s; *p != '\0';) {
+                char* end;
+                snapshot_frames.push_back(strtoll(p, &end, 10));
+                p = *end == ',' ? end + 1 : end;
+                if (end == p && *p != '\0') {
+                    break;
+                }
+            }
+        }
+        if (const char* r = getenv("MP_NETPLAY_RESTORE")) {
+            restore_path = r;
+            if (!read_snapshot(restore_path, to_restore)) {
+                fprintf(stderr, "[netplay] %s isn't a snapshot this build reads\n", restore_path.c_str());
+                std::_Exit(1);
+            }
+        }
+    }
+    if (!restored && !restore_path.empty() && detail::current_mode == Mode::Replay && frame_no >= 4 &&
+            game.can_snapshot != nullptr && game.can_snapshot(rdram)) {
+        restored = true;
+        take_up(rdram, to_restore);
+        to_restore = Snapshot{};
+    }
+    for (int64_t f : snapshot_frames) {
+        if (int64_t(frame_no) == f) {
+            write_snapshot(rdram);
+        }
+    }
     static int64_t poke_frame = -1;
     static uint32_t poke_address = 0;
     if (frame_no == 0) {
