@@ -122,9 +122,9 @@ text = "{ void mp_hud_side_sprites(uint8_t*, gpr, int32_t, gpr, gpr, int32_t); m
 
 # A screen wipe past 4:3 (lib/mario-party-engine/src/wipe.cpp says how): the wipe module's whole-screen rectangle
 # (func_800728F4(gfx, alpha), out through 0x800729C0), and a shape wipe (func_8007420C(gfx, size, alpha)): its size, a
-# float in a1, made larger as it starts for a picture wider than 4:3, and, with gfx in t0, its draws (from 0x80074250, past its whole-screen rectangle for a closed shape, to its end at 0x80074C14) and its rectangles
-# around its square (from 0x80074A9C, where it has set their colour, with the square's left and right edges in t3 and
-# t4).
+# float in a1, made larger as it starts for a picture wider than 4:3, and, with gfx in t0, its draws (from 0x80074250,
+# past its whole-screen rectangle for a closed shape, to its end at 0x80074C14) and its rectangles around its square
+# (from 0x80074A9C, where it has set their colour, with the square's left and right edges in t3 and t4).
 [[patches.hook]]
 func = "func_800728F4"
 before_vram = 0x800728F4
