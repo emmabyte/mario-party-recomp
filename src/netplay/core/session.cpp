@@ -20,7 +20,9 @@
 // every guest's. Identities that differ end the session, naming the lines that differ: a different ROM, build, mod or option would
 // play differently from the same inputs. The host's hello carries its save too, and each guest plays from it in place
 // of its own (Game's save and use_save), since a different save plays differently. netplay::start runs the handshake
-// before the game starts, so a guest has the host's save before the game reads it.
+// before the game starts, so a guest has the host's save before the game reads it. The hellos also carry the party's
+// id, which the host chooses, and whether the host resumes its last party (which one: its frame and hash), and each
+// guest's answer, whether its copy saved the same; the session starts only once every guest's has.
 //
 // From the launcher (lobby_open, netplay_core.h) the handshake runs before the game starts instead, on a thread of its
 // own, as a lobby: the host takes guests as they come (up to four players in all) and says how many play only when its
@@ -53,6 +55,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <random>
 #include <condition_variable>
 #include <mutex>
 #include <string>
@@ -139,6 +142,8 @@ namespace {
         // The lobby: whether it has readied up, and its player's name.
         bool ready = false;
         std::string name;
+        // A party the host resumes: whether this guest's copy has its save (0 not yet said, 1 yes, 2 no).
+        uint8_t has_party = 0;
     };
     // On a guest: the lobby's players as the host last listed them.
     struct Seat {
@@ -248,6 +253,20 @@ namespace {
     std::condition_variable_any session_cv;
     uint32_t frames_sent_to = 0; // on the host: how far the whole frames it has sent at a packet's coming go
     bool receiving = false;
+
+    // The session's own count of frames, which its inputs, whole frames and hashes go by. It is the game's frame
+    // (netplay::frame) until a copy takes up a snapshot of a party it resumes, which puts the game at the snapshot's
+    // frame: every copy does so at the same session frame, and the session goes on counting as before.
+    uint64_t sframe = 0;
+
+    // Resuming a party (SessionSettings' resume): the host offers the party its copy saved last, and each guest's copy
+    // says whether it has the same one (party_save, netplay_internal.h). Once every copy has it, each takes it up at
+    // the same session frame (netplay_core.cpp). A copy without it ends the session, saying so: it can't play that
+    // party.
+    bool resuming = false;     // the host's, from its settings; a guest's, from the host's hellos
+    PartySave offered;         // the party the host offers
+    uint8_t has_party = 0;     // a guest's answer (Remote's has_party)
+    bool party_taken = false;  // this copy has asked for its save to be taken up
 
     void send_delayed() {
         std::unique_lock lock{ delayed_mutex };
@@ -365,6 +384,18 @@ namespace {
                 put_name(w, p == 0 ? local_name : r.name);
             }
         }
+        // The party: the host's id for it, and whether it resumes one (which: its frame and hash); a guest's answer.
+        w.u64(party_id);
+        w.u8(resuming ? 1 : 0);
+        w.u64(offered.frame);
+        w.u64(offered.hash);
+        w.u8(has_party);
+        // A guest's player in the last party it saved, and that party's id, for the host to give it the same player
+        // when it resumes that party.
+        PartySave mine;
+        bool saved = !hosting && party_resumable(mine);
+        w.u8(uint8_t(saved ? mine.player : 0xFF));
+        w.u64(saved ? mine.id : 0);
         send(to, w);
     }
 
@@ -606,13 +637,13 @@ namespace {
             return;
         }
         Remote& other = remotes[hosting ? desync_who : 0];
-        if (frame_no % 4 == 0) {
+        if (sframe % 4 == 0) {
             send_pages(other, desync_frame);
         }
-        if (frame_no < uint64_t(desync_frame) + DESYNC_PLAY) {
+        if (sframe < uint64_t(desync_frame) + DESYNC_PLAY) {
             return;
         }
-        dump_rdram_now("desync-frame" + std::to_string(frame_no));
+        dump_rdram_now("desync-frame" + std::to_string(sframe));
         auto until = Clock::now() + std::chrono::milliseconds(1000);
         while (Clock::now() < until && std::find(their_have.begin(), their_have.end(), 0) != their_have.end()) {
             send_pages(other, desync_frame);
@@ -825,8 +856,46 @@ namespace {
                     their_roster[p] = Seat{ (flags & 1) != 0, (flags & 2) != 0, ping == 0xFFFF ? -1 : int(ping), take_name(r) };
                 }
             }
+            uint64_t their_party = r.u64();
+            bool their_resuming = r.u8() != 0;
+            PartySave their_offer;
+            their_offer.frame = r.u64();
+            their_offer.hash = r.u64();
+            uint8_t their_has_party = r.u8();
+            uint8_t their_saved_player = r.u8();
+            uint64_t their_saved_party = r.u64();
             if (!r.ok) {
                 return true;
+            }
+            if (hosting && resuming && !handshaken && their_saved_party == party_id && their_saved_player >= 1 &&
+                    their_saved_player < PORTS && their_saved_player != who && !remotes[their_saved_player].known) {
+                // A guest of the party resumed plays the player it played, whichever order the guests join in: it
+                // moves there, and the host's hellos tell it.
+                std::swap(remotes[who], remotes[their_saved_player]);
+                who = their_saved_player;
+            }
+            Remote& from = remotes[hosting ? who : 0];
+            if (hosting) {
+                from.has_party = their_has_party;
+            } else if (!handshaken) {
+                party_id = their_party;
+                resuming = their_resuming;
+                offered.frame = their_offer.frame;
+                offered.hash = their_offer.hash;
+                if (resuming && has_party == 0) {
+                    PartySave mine;
+                    bool same = party_resumable(mine) && mine.id == their_party && mine.frame == their_offer.frame &&
+                        mine.hash == their_offer.hash;
+                    has_party = same ? 1 : 2;
+                    if (!same) {
+                        say("[netplay] the host resumes a party this copy hasn't the save of: only the players of that party "
+                            "can resume it\n");
+                        for (int i = 0; i < 10; i++) {
+                            send_hello(from);
+                        }
+                        end_session(4);
+                    }
+                }
             }
             from.ready = their_ready;
             from.name = their_name;
@@ -923,6 +992,13 @@ namespace {
             if (!remotes[p].identity_ok || !remotes[p].saw_ours) {
                 return false;
             }
+            if (resuming && remotes[p].has_party == 2) {
+                say("[netplay] player %d's copy hasn't this party's save: only the players of that party can resume it\n", p + 1);
+                end_session(4);
+            }
+            if (resuming && remotes[p].has_party != 1) {
+                return false;
+            }
         }
         return true;
     }
@@ -1004,10 +1080,10 @@ namespace {
             longest_wait_ms = std::max(longest_wait_ms, ms);
             frames_waited++;
         }
-        if (frame_no % 300 == 299) {
+        if (sframe % 300 == 299) {
             char line[200];
             snprintf(line, sizeof(line), "[netplay] frames to %" PRIu64 ": %d waited, %.0f ms in all, the longest %.0f ms; "
-                    "delay %d\n", frame_no, frames_waited, waited_ms, longest_wait_ms, delay);
+                    "delay %d\n", sframe, frames_waited, waited_ms, longest_wait_ms, delay);
             log_session_line(line);
             waited_ms = longest_wait_ms = 0;
             frames_waited = 0;
@@ -1020,7 +1096,7 @@ namespace {
     // ten seconds in which it could have: a steady delay feels better than the lowest one (docs/netplay.md).
     Clock::time_point lower_since{};
     void adjust_delay() {
-        if (!hosting || delay_forced || frame_no % 15 != 0) {
+        if (!hosting || delay_forced || sframe % 15 != 0) {
             return;
         }
         double worst_rtt = 0, worst_wait = recent_wait_ms;
@@ -1059,7 +1135,7 @@ namespace {
         if (wanted != target_delay) {
             char line[200];
             snprintf(line, sizeof(line), "[netplay] frame %" PRIu64 ": delay %d to %d (round trip %.0f ms, waits %.0f ms "
-                    "in the last second)\n", frame_no, target_delay, wanted, worst_rtt, worst_wait);
+                    "in the last second)\n", sframe, target_delay, wanted, worst_rtt, worst_wait);
             fputs(line, stderr);
             log_session_line(line);
             target_delay = wanted;
@@ -1074,7 +1150,7 @@ namespace {
         if (target_delay > delay && delay < 15) {
             local_inputs.push_back(mine);
             delay++;
-        } else if (target_delay < delay && delay > 1 && local_inputs.size() > frame_no + 1) {
+        } else if (target_delay < delay && delay > 1 && local_inputs.size() > sframe + 1) {
             delay--;
             return;
         }
@@ -1115,6 +1191,22 @@ namespace {
         prepare_buffers();
         handshaken = true;
         say("[netplay] every copy matches: the session starts with %d players\n", players);
+        if (resuming && hosting && int(offered.players) != players) {
+            say("[netplay] the party resumed was of %d players, this session of %d\n", int(offered.players), players);
+            end_session(4);
+        }
+        party_player = player;
+        PartySave mine;
+        if (resuming && !hosting && party_resumable(mine) && int(mine.player) != player) {
+            say("[netplay] in the party resumed this copy's player was player %d, and now it is player %d: join in the "
+                "order of last time\n", int(mine.player) + 1, player + 1);
+            end_session(4);
+        }
+        if (resuming && !party_taken) {
+            party_taken = true;
+            resume_party();
+            say("[netplay] resuming the party saved at its frame %" PRIu64 "\n", offered.frame);
+        }
     }
 
     void handshake() {
@@ -1168,6 +1260,7 @@ namespace {
             }
         }
         status.peer = peer_text;
+        status.resuming = resuming;
         status.said = said;
         status.reason = phase == LobbyStatus::Failed ? said.substr(std::min(reason_from, said.size())) : std::string();
     }
@@ -1260,7 +1353,7 @@ namespace {
 
     // Whether the frame's inputs from everyone are here.
     bool frame_ready() {
-        return hosting ? wholes_ready() > frame_no : remotes[0].next > frame_no;
+        return hosting ? wholes_ready() > sframe : remotes[0].next > sframe;
     }
 
     // Whether every other copy has all it needs of this one's to play the session's frames.
@@ -1292,6 +1385,14 @@ namespace {
 
 bool netplay::detail::open_session(const SessionSettings& settings) {
     hosting = settings.host;
+    if (hosting) {
+        // The party's id: the last party's when it resumes, a new one's otherwise.
+        resuming = settings.resume && party_resumable(offered);
+        if (settings.resume && !resuming) {
+            say("[netplay] there's no party to resume: this session starts a new one\n");
+        }
+        party_id = resuming ? offered.id : (uint64_t(std::random_device{}()) << 32 | std::random_device{}()) | 1;
+    }
     if (const char* d = getenv("MP_NETPLAY_DELAY"); d != nullptr && *d != '\0') {
         delay = std::clamp(atoi(d), 1, 15); // the host's, for every player; a guest's is ignored
         delay_forced = true;
@@ -1359,7 +1460,7 @@ Frame netplay::detail::session_frame(uint64_t hash) {
             r.heard = Clock::now(); // the time from the lobby to the game's first frame doesn't count as silence
         }
     }
-    if (session_frames >= 0 && int64_t(frame_no) >= session_frames) {
+    if (session_frames >= 0 && int64_t(sframe) >= session_frames) {
         // Stay until the others have this copy's part of every frame they play, then end.
         auto until = Clock::now() + std::chrono::seconds(3);
         while (!others_have_all() && Clock::now() < until) {
@@ -1367,7 +1468,7 @@ Frame netplay::detail::session_frame(uint64_t hash) {
             receive_packet(16);
         }
         say("[netplay] played %" PRIu64 " frames: %" PRIu64 " hashes compared, every one matched\n",
-                frame_no, hashes_compared);
+                sframe, hashes_compared);
         end_session(0);
     }
     local_hashes.push_back(hash);
@@ -1402,11 +1503,11 @@ Frame netplay::detail::session_frame(uint64_t hash) {
         int who = 0;
         auto silent = Clock::now() - quietest(who).heard;
         if (!told && silent > std::chrono::seconds(1)) {
-            say("[netplay] frame %" PRIu64 ": waiting for player %d\n", frame_no, who + 1);
+            say("[netplay] frame %" PRIu64 ": waiting for player %d\n", sframe, who + 1);
             told = true;
         }
         if (silent > std::chrono::milliseconds(timeout_ms)) {
-            say("[netplay] frame %" PRIu64 ": player %d stopped answering\n", frame_no, who + 1);
+            say("[netplay] frame %" PRIu64 ": player %d stopped answering\n", sframe, who + 1);
             end_session(3);
         }
     }
@@ -1418,11 +1519,12 @@ Frame netplay::detail::session_frame(uint64_t hash) {
     Frame fr;
     fr.connected = uint8_t(connected_mask);
     for (int q = 0; q < players; q++) {
-        Inputs in = hosting ? input_of(q, uint32_t(frame_no)) : wholes[frame_no][q];
+        Inputs in = hosting ? input_of(q, uint32_t(sframe)) : wholes[sframe][q];
         for (int i = 0; i < game.samples_per_frame; i++) {
             fr.samples[i][q] = in[i];
         }
     }
+    sframe++;
     return fr;
 }
 

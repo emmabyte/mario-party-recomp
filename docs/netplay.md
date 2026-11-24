@@ -91,6 +91,14 @@ The handshake runs at the game's entry, before it reads its save (`mp_netplay::s
 - Every copy plays from the host's save: the host's hello carries it, and a guest writes it to `saves/netplay` and
   plays from there, its own save untouched.
 
+Every copy saves the party as it plays: at the start of each scene, the game as it is then goes to `netplay/party.snap`
+(a snapshot, below), the same game in each copy, with the party's id and the hash of its state. A party that ends
+early (a crash, a player gone) can go on from there: the host picks **Resume Last Party** (`MP_NETPLAY_RESUME=1`), the
+same players join in the same order, and once every copy has said it holds the same save (the id, frame and hash the
+host offers), each takes it up at the same frame of the new session and the party goes on. A copy without it, or
+joined as another player, says so and the session ends. `tools/netplay_session_test.sh`'s `NETPLAY_TEST_RESUME` tests
+it.
+
 Each plays with their own first controller. Only the host's UDP port (7845 by default) must be reachable from the
 others: over the internet, a shared VPN or the port forwarded on the host's router.
 

@@ -103,7 +103,11 @@ namespace netplay {
         int player = 0;
         uint16_t port = 0;
         std::string name; // the player's, for the lobby (at most 16 bytes); empty: "Player N"
+        bool resume = false; // the host's: resume the last party (party_save) rather than start a new one
     };
+    // The last party this copy played in, which a host can resume (SessionSettings' resume) if every player's copy has
+    // it: false without one. Its frame is the game's, at the start of the scene it was saved at.
+    bool party_save(uint64_t& frame, int& players);
     // Sets the session start() starts, unless the environment set one (netplay_core.cpp). Returns false if another
     // mode runs.
     bool set_session(const SessionSettings& settings);
@@ -130,6 +134,7 @@ namespace netplay {
         std::string peer;                 // on a guest: the host's address, as typed
         std::string said;                 // the session's lines so far
         std::string reason;               // Failed: the lines that say why
+        bool resuming = false;            // the host resumes its last party (a guest knows once the host has said)
     };
     // Returns false if another mode runs, or the session couldn't open (the status says why).
     bool lobby_open(const SessionSettings& settings);

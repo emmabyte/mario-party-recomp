@@ -1,6 +1,7 @@
 // The launcher's Online Play: three screens over the launcher, in RecompFrontend's own look (its theme, buttons and
 // labels), laid out as the project's design for them has them.
-// - Online Play: the player's name, then Host a Party, Join a Party and Back.
+// - Online Play: the player's name, then Host a Party, Resume Last Party (when this copy saved one), Join a Party and
+//   Back.
 // - Join a Party: the host's address, Connect! and Back, and how connecting goes.
 // - The party: a place for each of four players (its number, an initial, the name, HOST and YOU, the round trip to the
 //   host, and whether they're ready), the address to share (the host's) or joined (a guest's), a note that characters
@@ -250,6 +251,8 @@ namespace {
         Element* menu;
         TextInput* name_input;
         Button* host_button;
+        Button* resume_button;
+        bool resuming = false;
 
         Element* join;
         TextInput* address_input;
@@ -294,7 +297,10 @@ namespace {
             name_input = context.create_element<TextInput>(menu);
             name_input->add_text_changed_callback([](const std::string& text) { set_option("name", trimmed(text)); });
             host_button = menu_button(context, menu, "Host a Party", "Open a lobby", ButtonStyle::Primary);
-            host_button->add_pressed_callback([this]() { host(); });
+            host_button->add_pressed_callback([this]() { host(false); });
+            resume_button = menu_button(context, menu, "Resume Last Party", "Everyone from it joins again",
+                                        ButtonStyle::Primary);
+            resume_button->add_pressed_callback([this]() { host(true); });
             Button* join_button = menu_button(context, menu, "Join a Party", "Enter the host's address",
                                               ButtonStyle::Secondary);
             join_button->add_pressed_callback([this]() { show(Screen::Join); });
@@ -368,6 +374,11 @@ namespace {
         }
 
         void open() {
+            // Resume Last Party, when this copy has played a party online: the game as it was at the start of the
+            // last scene everyone reached.
+            uint64_t frame = 0;
+            int party_players = 0;
+            resume_button->set_display(netplay::party_save(frame, party_players) ? Display::Flex : Display::None);
             name_input->set_text(option("name"));
             address_input->set_text(option("address"));
             show(Screen::Menu);
@@ -414,11 +425,14 @@ namespace {
             return netplay::lobby_open(s);
         }
 
-        void host() {
+        void host(bool resume) {
             if (!online.can_start()) {
                 return; // it says why (no ROM)
             }
-            if (!open_lobby(settings(true))) {
+            netplay::SessionSettings s = settings(true);
+            s.resume = resume;
+            resuming = resume;
+            if (!open_lobby(s)) {
                 show(Screen::Menu);
                 open_info_prompt("Online Play", sentences(netplay::lobby_status().reason), "OK", []() {},
                                  ButtonStyle::Primary);
@@ -497,15 +511,25 @@ namespace {
                 }
                 share_address->set_text_unsafe(escaped(addresses.empty() ? "your address, port " + option("port")
                                                                          : addresses));
-                note->set_text_unsafe("<b>Characters and party rules are picked in-game.</b> Once everyone's ready, "
-                                      "start the game and the usual setup screens take over.");
+                if (s.resuming) {
+                    note->set_text_unsafe("<b>Resuming your last party</b> where its last scene started. Everyone who "
+                                          "played in it joins again, in the same order as last time, and the game picks up from there.");
+                } else {
+                    note->set_text_unsafe("<b>Characters and party rules are picked in-game.</b> Once everyone's "
+                                          "ready, start the game and the usual setup screens take over.");
+                }
             } else {
                 const std::string& host_name = s.seats[0].name;
                 party_title->set_text(host_name.empty() ? "The Host's Party" : host_name + "'s Party");
                 share_caption->set_text("Connected to");
                 share_address->set_text(s.peer);
-                note->set_text_unsafe("<b>Characters and party rules are picked in-game.</b> Ready up and the host "
-                                      "will start the game.");
+                if (s.resuming) {
+                    note->set_text_unsafe("<b>The host is resuming your last party.</b> Ready up and it picks up "
+                                          "where its last scene started.");
+                } else {
+                    note->set_text_unsafe("<b>Characters and party rules are picked in-game.</b> Ready up and the "
+                                          "host will start the game.");
+                }
             }
             int present = 0;
             bool all_ready = true;

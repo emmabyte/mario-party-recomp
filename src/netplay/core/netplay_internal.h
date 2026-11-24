@@ -56,4 +56,21 @@ namespace netplay::detail {
     void close_session_record();
     // The folder of the record, empty without one.
     const std::string& session_record_folder();
+
+    // netplay_core.cpp: the party save. During a session every copy writes the game as it is at the start of each scene
+    // (Game's can_snapshot) to party.snap in Game's data_folder, the same game in each, with the party's id, which the
+    // host chooses as a session starts; a party the players resume keeps its id. party_resumable reads the header of
+    // this copy's; resume_party has the copy take it up at the session's first frame the game can (the same in every
+    // copy).
+    struct PartySave {
+        uint64_t id = 0;
+        uint64_t frame = 0;
+        uint64_t hash = 0;     // the game state's hash at its frame, the same in every copy that saved it
+        uint32_t players = 0;
+        uint32_t player = 0;   // this copy's player in it, from 0
+    };
+    extern uint64_t party_id;
+    extern int party_player; // this copy's player, for its party saves
+    bool party_resumable(PartySave& out);
+    void resume_party();
 }

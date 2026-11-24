@@ -15,7 +15,8 @@
 //   default). Without these, the game's Online settings say (src/netplay/mario_party.cpp, set_session).
 // - For either: MP_NETPLAY_DELAY (frames of input delay, 3 by default), MP_NETPLAY_FRAMES (ends the session after
 //   that many frames, for tests), MP_NETPLAY_TIMEOUT_MS (how long a frame waits for a silent player, 15000) and
-//   MP_NETPLAY_DROP (a share of packets to drop, in percent, to test a lossy link).
+//   MP_NETPLAY_DROP (a share of packets to drop, in percent, to test a lossy link). MP_NETPLAY_RESUME=1 on the host
+//   resumes the last party (netplay_internal.h's party save) rather than starting a new one.
 // - MP_NETPLAY_SNAPSHOT=<n>[,<n>...]: writes a snapshot of the game (Game's can_snapshot) at each frame n to
 //   <file>.frame<n>.snap. MP_NETPLAY_RESTORE=<snap>, in a replay: at the first frame the game can take one at (from
 //   the fourth), takes up the snapshot's frame in its place and replays on from there, to test that it plays alike.
@@ -34,7 +35,9 @@
 #include <ctime>
 #include <deque>
 #include <filesystem>
+#include <memory>
 #include <mutex>
+#include <thread>
 
 // The runtime's conversion of a stick's position to the N64's range (N64ModernRuntime's ultramodern/src/input.cpp).
 void convert_to_n64_range(float x, float y, int8_t& stick_x, int8_t& stick_y);
@@ -362,6 +365,7 @@ void netplay::init(const Game& g, const ultramodern::input::callbacks_t& callbac
         SessionSettings s;
         s.host = true;
         s.players = atoi(host);
+        s.resume = getenv("MP_NETPLAY_RESUME") != nullptr;
         s.port = uint16_t(port != nullptr ? atoi(port) : 7845);
         current_mode = open_session(s) ? Mode::Session : Mode::Off;
     } else if (const char* peer = getenv("MP_NETPLAY_PEER")) {
@@ -525,14 +529,33 @@ bool netplay::sample_pads() {
 // A snapshot (Game's can_snapshot): "MPSS", a version, the frame, the game's extra state, then RDRAM.
 namespace {
     constexpr uint32_t SNAP_MAGIC = 0x5353504D; // "MPSS"
-    constexpr uint32_t SNAP_VERSION = 2;
+    constexpr uint32_t SNAP_VERSION = 3;
     // RDRAM and the 8 MB past it the recomp gives its patches (patches/patches.ld), whose data is the game's too.
     constexpr size_t SNAP_SIZE = 16 * 1024 * 1024;
     std::vector<int64_t> snapshot_frames;
     std::string restore_path;
     bool restored = false;
 
-    void write_snapshot(const uint8_t* rdram) {
+    // The header: "MPSS", the version, then PartySave's frame, id, hash and players.
+    void write_snapshot_header(FILE* f, const PartySave& head, uint32_t extra_size) {
+        write_u32(f, SNAP_MAGIC);
+        write_u32(f, SNAP_VERSION);
+        write_u64(f, head.frame);
+        write_u64(f, head.id);
+        write_u64(f, head.hash);
+        write_u32(f, head.players);
+        write_u32(f, head.player);
+        write_u32(f, extra_size);
+    }
+
+    bool read_snapshot_header(FILE* f, PartySave& head, uint32_t& extra_size) {
+        uint32_t magic = 0, version = 0;
+        return read_u32(f, magic) && read_u32(f, version) && magic == SNAP_MAGIC && version == SNAP_VERSION &&
+            read_u64(f, head.frame) && read_u64(f, head.id) && read_u64(f, head.hash) && read_u32(f, head.players) &&
+            read_u32(f, head.player) && read_u32(f, extra_size);
+    }
+
+    void write_snapshot(const uint8_t* rdram, uint64_t hash) {
         std::string out = (path.empty() ? std::string("netplay") : path) + ".frame" + std::to_string(frame_no) + ".snap";
         FILE* f = fopen(out.c_str(), "wb");
         if (f == nullptr) {
@@ -540,10 +563,7 @@ namespace {
             return;
         }
         std::vector<uint8_t> extra = game.extra_state != nullptr ? game.extra_state() : std::vector<uint8_t>{};
-        write_u32(f, SNAP_MAGIC);
-        write_u32(f, SNAP_VERSION);
-        write_u64(f, frame_no);
-        write_u32(f, uint32_t(extra.size()));
+        write_snapshot_header(f, PartySave{ 0, frame_no, hash, 0, 0 }, uint32_t(extra.size()));
         fwrite(extra.data(), 1, extra.size(), f);
         fwrite(rdram, 1, SNAP_SIZE, f);
         fclose(f);
@@ -562,12 +582,13 @@ namespace {
 
     bool read_snapshot(const std::string& file, Snapshot& out) {
         FILE* f = fopen(file.c_str(), "rb");
-        uint32_t magic = 0, version = 0, extra_size = 0;
-        if (f == nullptr || !read_u32(f, magic) || !read_u32(f, version) || magic != SNAP_MAGIC || version != SNAP_VERSION ||
-                !read_u64(f, out.frame) || !read_u32(f, extra_size)) {
+        uint32_t extra_size = 0;
+        PartySave head;
+        if (f == nullptr || !read_snapshot_header(f, head, extra_size)) {
             if (f != nullptr) fclose(f);
             return false;
         }
+        out.frame = head.frame;
         out.extra.resize(extra_size);
         out.ram.resize(SNAP_SIZE);
         bool whole = fread(out.extra.data(), 1, extra_size, f) == extra_size && fread(out.ram.data(), 1, SNAP_SIZE, f) == SNAP_SIZE;
@@ -608,6 +629,95 @@ namespace {
     }
 }
 
+// The party save (netplay_internal.h).
+uint64_t netplay::detail::party_id = 0;
+int netplay::detail::party_player = 0;
+
+namespace {
+    bool was_safe = false;                 // whether the game could be saved at the last frame
+    uint64_t party_saved_frame = ~0ull;    // the game frame last saved or taken up, not to save again
+    std::atomic<bool> party_writing{ false };
+    bool resume_pending = false;
+    Snapshot to_resume;
+
+    std::string party_path() {
+        if (game.data_folder == nullptr) {
+            return {};
+        }
+        return (std::filesystem::path(game.data_folder()) / "party.snap").string();
+    }
+
+    // Writes the game to party.snap on a thread of its own (16 MB takes a while), by way of party.snap.tmp, so that a
+    // copy that stops as it writes keeps the save before. One write at a time: a scene that ends sooner is left out.
+    void save_party(const uint8_t* rdram, uint64_t hash) {
+        std::string out = party_path();
+        if (out.empty() || party_writing.exchange(true)) {
+            return;
+        }
+        auto extra = std::make_shared<std::vector<uint8_t>>(game.extra_state != nullptr ? game.extra_state() : std::vector<uint8_t>{});
+        auto ram = std::make_shared<std::vector<uint8_t>>(rdram, rdram + SNAP_SIZE);
+        uint32_t players = 0;
+        for (uint32_t m = connected_mask.load(); m != 0; m &= m - 1) {
+            players++;
+        }
+        PartySave head{ party_id, frame_no, hash, players, uint32_t(party_player) };
+        char line[128];
+        snprintf(line, sizeof(line), "[netplay] frame %" PRIu64 ": saved the party\n", frame_no);
+        log_session_line(line);
+        std::thread([out, head, extra, ram] {
+            std::string tmp = out + ".tmp";
+            bool ok = false;
+            if (FILE* f = fopen(tmp.c_str(), "wb")) {
+                write_snapshot_header(f, head, uint32_t(extra->size()));
+                ok = fwrite(extra->data(), 1, extra->size(), f) == extra->size() &&
+                    fwrite(ram->data(), 1, ram->size(), f) == ram->size();
+                ok = fclose(f) == 0 && ok;
+            }
+            std::error_code ec;
+            if (ok) {
+                std::filesystem::rename(tmp, out, ec);
+            }
+            if (!ok || ec) {
+                fprintf(stderr, "[netplay] couldn't save the party to %s\n", out.c_str());
+            }
+            party_writing = false;
+        }).detach();
+    }
+}
+
+bool netplay::detail::party_resumable(PartySave& out) {
+    std::string file = party_path();
+    if (file.empty()) {
+        return false;
+    }
+    FILE* f = fopen(file.c_str(), "rb");
+    if (f == nullptr) {
+        return false;
+    }
+    uint32_t extra_size = 0;
+    bool ok = read_snapshot_header(f, out, extra_size);
+    fclose(f);
+    return ok;
+}
+
+bool netplay::party_save(uint64_t& frame, int& players) {
+    PartySave head;
+    if (!detail::party_resumable(head)) {
+        return false;
+    }
+    frame = head.frame;
+    players = int(head.players);
+    return true;
+}
+
+void netplay::detail::resume_party() {
+    PartySave head;
+    if (party_resumable(head) && read_snapshot(party_path(), to_resume)) {
+        party_id = head.id;
+        resume_pending = true;
+    }
+}
+
 Frame netplay::advance(uint8_t* rdram) {
     if (frame_no == 0) {
         if (const char* s = getenv("MP_NETPLAY_SNAPSHOT")) {
@@ -634,10 +744,16 @@ Frame netplay::advance(uint8_t* rdram) {
         take_up(rdram, to_restore);
         to_restore = Snapshot{};
     }
-    for (int64_t f : snapshot_frames) {
-        if (int64_t(frame_no) == f) {
-            write_snapshot(rdram);
-        }
+    if (resume_pending && detail::current_mode == Mode::Session && frame_no >= 4 && game.can_snapshot != nullptr &&
+            game.can_snapshot(rdram)) {
+        // A party the players resume: every copy is at the same session frame here, with the same game.
+        resume_pending = false;
+        take_up(rdram, to_resume);
+        to_resume = Snapshot{};
+        party_saved_frame = frame_no;
+        char line[128];
+        snprintf(line, sizeof(line), "[netplay] resumed the party at its frame %" PRIu64 "\n", frame_no);
+        log_session_line(line);
     }
     static int64_t poke_frame = -1;
     static uint32_t poke_address = 0;
@@ -654,6 +770,19 @@ Frame netplay::advance(uint8_t* rdram) {
         rdram[poke_address - 0x80000000u] ^= 0x5A;
     }
     FrameHash h = hash_state(rdram);
+    for (int64_t f : snapshot_frames) {
+        if (int64_t(frame_no) == f) {
+            write_snapshot(rdram, h.total);
+        }
+    }
+    // The party save, at the start of each scene, once the party has started (not while it waits to resume).
+    bool safe = detail::current_mode == Mode::Session && !resume_pending && frame_no >= 4 && game.can_snapshot != nullptr &&
+        game.can_snapshot(rdram);
+    if (safe && !was_safe && frame_no != party_saved_frame) {
+        party_saved_frame = frame_no;
+        save_party(rdram, h.total);
+    }
+    was_safe = safe;
     for (int64_t f : dump_frames) {
         if (int64_t(frame_no) == f) {
             dump_rdram(rdram);

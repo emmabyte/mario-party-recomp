@@ -11,6 +11,8 @@
 # passed on; MP_NETPLAY_MINIGAMES as in the replay test. NETPLAY_TEST_GUEST_SAVE names a save the other players start
 # with, where player 1 starts with none. NETPLAY_TEST_GUEST_ENV adds variables to the guests' (MP_NETPLAY_TEST_POKE to
 # make a desync, for one): each guest plays from the host's save, so the session matches all the same.
+# NETPLAY_TEST_RESUME=1 plays again in the out dir's folders of a session before, the host resuming its party (the
+# party each copy saved at its last scene's start), to test that every copy takes it up alike.
 set -euo pipefail
 
 build="$(realpath "$1")"
@@ -30,6 +32,10 @@ sleep 2
 
 new_run() {
     local dir="$out/$1"
+    if [ -n "${NETPLAY_TEST_RESUME:-}" ] && [ -d "$dir" ]; then
+        echo "$dir"
+        return
+    fi
     rm -rf "$dir"
     mkdir -p "$dir"
     touch "$dir/portable.txt"
@@ -87,7 +93,7 @@ run() {
 
 players="${NETPLAY_TEST_PLAYERS:-2}"
 echo "a session of $players players, $frames frames"
-run player1 MP_NETPLAY_HOST="$players" MP_NETPLAY_PORT=7845
+run player1 MP_NETPLAY_HOST="$players" MP_NETPLAY_PORT=7845 ${NETPLAY_TEST_RESUME:+MP_NETPLAY_RESUME=1}
 p1=$!
 pids=("$p1")
 for n in $(seq 2 "$players"); do
