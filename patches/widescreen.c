@@ -602,9 +602,9 @@ s32 widescreen_blooper_gone(omObjData* blooper, s32 player, s32 past_4x3) {
 // picture's; a wider picture showed black past them, the frame's clear: at the top left beside the start's ramp as
 // READY and GO show, and at the top right beyond its far corner as the players go on. The bridge, the start and the
 // goal are models of their own, and the lava's square is laid under them. us.toml's hook calls this once the setup has
-// made it: the square 3 more times as large again as the picture is wider than 4:3 (twice as large at 16:9), in x and
-// z, and its vertices' texture coordinates as many times further from their middle, so its lava keeps the size it had
-// as it reaches the wider picture's corners. The vertices are in each of the model's buffers (it repeats one in every
+// made it: the square larger in x and z by 3 times what the picture is wider than 4:3 by (twice its size at 16:9, 5
+// times at 32:9), and its vertices' texture coordinates as many times further from their middle, so its lava keeps the
+// size it had as it reaches the wider picture's corners. The vertices are in each of the model's buffers (it repeats one in every
 // slot); a coordinate stays inside the 16 bits it is kept in, the square no larger than that allows. At 4:3 it keeps
 // its size.
 #define SKATE_LAVA_MORE 3.0f
@@ -728,7 +728,8 @@ void widescreen_skate_lava(omObjData* camera) {
 
 // Its goal, the gate the course ends at, is shown (func_800FA3B4_SkateBoardSkamper) once the course's scroll is within
 // 3000 of it, which at 4:3 is past the picture's top; a wider picture saw its posts appear inside its top right.
-// us.toml's hook gives that test this reach instead, the 3000 as many times as the lava is larger: the game's at 4:3.
+// us.toml's hook gives that test this reach instead, the 3000 as many times longer as the lava is larger (6000 at
+// 16:9), and the game's own 3000 at 4:3.
 f32 widescreen_skate_goal_reach(void) {
     return 3000.0f * skate_lava_factor();
 }
