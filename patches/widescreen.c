@@ -363,3 +363,40 @@ void widescreen_bumper_sea(s16 model) {
 void widescreen_mushroom_sea(omObjData* sea) {
     widen_object(sea, 1.55f);
 }
+
+// Platform Peril (overlay 0x18): a platform that has fallen away is parked by its frame function
+// (func_800F8220_PlatformPeril or func_800F87A0_PlatformPeril), once it has fallen past y -5000, at (-5000, -5000,
+// -5000) and still drawn, which the camera, looking down the path from above, has just past the bottom left of a 4:3
+// picture. A wider one showed the parked platforms popping in and out at its bottom left as the camera swayed.
+// us.toml's hooks call this at the end of both, with the platform's object: a parked platform's models hidden, as
+// the game hides the players it parks once they fall. Only its models parked with it, within a few hundred units of
+// that spot (its side piece sits beside it): one of the object's slots names the sky, which stays at the origin,
+// and hiding every slot's model hid the sky too.
+#define PLATFORM_PARKED -5000.0f
+#define PLATFORM_PARKED_NEAR 1000.0f
+
+static s32 platform_parked_near(f32 at) {
+    return at > PLATFORM_PARKED - PLATFORM_PARKED_NEAR && at < PLATFORM_PARKED + PLATFORM_PARKED_NEAR;
+}
+
+void widescreen_platform_parked(omObjData* platform) {
+    s32 i;
+
+    if (platform->trans.x != PLATFORM_PARKED || platform->trans.y != PLATFORM_PARKED ||
+        platform->trans.z != PLATFORM_PARKED) {
+        return;
+    }
+    for (i = 0; i < platform->mdlcnt; i++) {
+        s16 index = platform->model[i];
+        unk_ovl_2D_struct* model;
+
+        if (index < 0) {
+            continue;
+        }
+        model = &D_800F2B7C[index];
+        if (platform_parked_near(model->unk_24) && platform_parked_near(model->unk_28) &&
+            platform_parked_near(model->unk_2C)) {
+            func_800258EC(index, 4, 4);
+        }
+    }
+}
