@@ -263,3 +263,18 @@ text = "{ gpr mp_model_push(uint8_t*, gpr, int32_t, gpr, int32_t, gpr, int32_t);
 func = "func_8002D614"
 before_vram = 0x8002DA80
 text = "{ void mp_model_pop(uint8_t*, gpr); mp_model_pop(rdram, (gpr)(int32_t)0x800F37DC); }"
+
+# A 3D model's texture clamped where its triangles' part of it ends (src/game/model_tiles.cpp says why): Crazy Cutter's
+# cones, barricades and poles had a thin dark line under them above the console's resolution, a row of the picture
+# under theirs in their texture's sheet. func_8002E488 writes a batch of a model part's triangles as the model is made,
+# after the texture they are drawn with if it is another, the batch's vertices made already (src/2C0C0.c): at its start
+# and before its last store (0x80030D1C, D_800EE32C still the batch's first vertex).
+[[patches.hook]]
+func = "func_8002E488"
+before_vram = 0x8002E488
+text = "{ void mp_model_batch_start(uint8_t*); mp_model_batch_start(rdram); }"
+
+[[patches.hook]]
+func = "func_8002E488"
+before_vram = 0x80030D1C
+text = "{ void mp_model_batch_end(uint8_t*); mp_model_batch_end(rdram); }"
