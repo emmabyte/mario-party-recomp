@@ -1,0 +1,1 @@
+- In Cast Aways, the sky now reaches the top of the screen. Before, a flat band of a lighter blue showed along the top edge, 4:3 or wide: the game draws its sky starting 10 lines down, which a TV's overscan hid. The sky is now drawn a little taller, so it starts at the very top.
