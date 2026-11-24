@@ -1,1 +1,2 @@
+- In the Mini-Game House, the red exit door no longer slides out of its archway, with white showing beside it, as the camera turns from it to the Pot o' Skills or the Mini-Game table. The room now turns as one in the frames drawn between the game's own.
 - In Mushroom Mix-Up in a wide window, a player who falls in and the Blooper dragging them away now swim off the side of the screen. Before, both vanished in the open sea where a 4:3 picture's edge would be.
