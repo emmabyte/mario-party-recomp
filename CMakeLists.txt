@@ -243,6 +243,7 @@ target_sources(MarioPartyRecompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/mario-party-engine/src/model_ids.cpp
     ${CMAKE_SOURCE_DIR}/src/game/recomp_api.cpp
     ${CMAKE_SOURCE_DIR}/src/game/survey.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/model_tiles.cpp
 )
 if (MP_PATCHES)
     target_sources(MarioPartyRecompiled PRIVATE ${CMAKE_SOURCE_DIR}/src/main/register_patches.cpp)
