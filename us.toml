@@ -120,6 +120,16 @@ func = "func_800FDBB4_BashNCash"
 before_vram = 0x800FDEAC
 text = "{ void mp_hud_side_sprites(uint8_t*, gpr, int32_t, gpr, gpr, int32_t); mp_hud_side_sprites(rdram, (gpr)(int32_t)0x800FE5D8, 20, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800ED60C), (gpr)(int32_t)0x800EE330, 0xC); }"
 
+# Bobsled Run's progress bar between its two views over the window (lib/mario-party-engine/src/hud.cpp says how): the
+# function that makes it (func_800FA96C_BobsledRun) makes its tiles, basic sprites at y 0x70 from x 8 to 4:3's right
+# edge, keeping each one's index in turn in an s16 at 0x800FFAD4, and its finish post's in the next, which it holds at
+# its end (after its last call, before it restores ra). The racers' icons (y 0x5A and 0x5E), the flag (0x60) and the
+# start's marks (0x68 and 0x6C) are over it, on the screen's rows 0x58 up to the bottom view's top, 0x80.
+[[patches.hook]]
+func = "func_800FA96C_BobsledRun"
+before_vram = 0x800FAD4C
+text = "{ void mp_hud_bar(uint8_t*, gpr, int32_t, gpr, gpr, int32_t, int32_t, int32_t); mp_hud_bar(rdram, (gpr)(int32_t)0x800FFAD4, 2, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800ED60C), (gpr)(int32_t)0x800EE330, 0xC, 0x58, 0x80); }"
+
 # A screen wipe past 4:3 (lib/mario-party-engine/src/wipe.cpp says how): the wipe module's whole-screen rectangle
 # (func_800728F4(gfx, alpha), out through 0x800729C0), and a shape wipe (func_8007420C(gfx, size, alpha)): its size, a
 # float in a1, made larger as it starts for a picture wider than 4:3, and, with gfx in t0, its draws (from 0x80074250,
