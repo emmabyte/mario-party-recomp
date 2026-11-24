@@ -1,1 +1,2 @@
 - In the Mini-Game House, the red exit door no longer slides out of its archway, with white showing beside it, as the camera turns from it to the Pot o' Skills or the Mini-Game table. The room now turns as one in the frames drawn between the game's own.
+- In Piranha's Pursuit in a wide window, the hanging vines, logs and boulders no longer appear and vanish in the picture's sides as the course scrolls: they come in and go out past the window's edges.
