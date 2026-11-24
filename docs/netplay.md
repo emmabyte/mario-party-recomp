@@ -156,5 +156,5 @@ frame n, and `MP_NETPLAY_RESTORE=<file>` in a replay of the same recording takes
 fourth after power-on) and replays on from there: a 12,000-frame recording taken up at two of its hub's scenes played
 on to its end with every frame matching.
 
-Which processes have started is the engine's to say (`mp_prc_started`): until lib/mario-party-engine has it,
-`lib-patches/mario-party-engine/` holds the change, and the build applies it to the checkout.
+Which processes have started is the engine's to say (`mp_prc_started`, lib/mario-party-engine's
+`process_threads.cpp`).
