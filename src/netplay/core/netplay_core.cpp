@@ -614,6 +614,34 @@ namespace {
         return whole;
     }
 
+    // A snapshot from a file's bytes, as read_snapshot reads the file.
+    bool snapshot_from_bytes(const std::vector<uint8_t>& bytes, Snapshot& out, PartySave& head) {
+        size_t at = 0;
+        auto u32 = [&](uint32_t& v) {
+            if (at + 4 > bytes.size()) return false;
+            v = 0;
+            for (int i = 0; i < 4; i++) v |= uint32_t(bytes[at + i]) << (8 * i);
+            at += 4;
+            return true;
+        };
+        auto u64 = [&](uint64_t& v) {
+            uint32_t lo = 0, hi = 0;
+            if (!u32(lo) || !u32(hi)) return false;
+            v = lo | (uint64_t(hi) << 32);
+            return true;
+        };
+        uint32_t magic = 0, version = 0, extra_size = 0;
+        if (!u32(magic) || !u32(version) || magic != SNAP_MAGIC || version != SNAP_VERSION || !u64(head.frame) ||
+                !u64(head.id) || !u64(head.hash) || !u32(head.players) || !u32(head.player) || !u32(extra_size) ||
+                bytes.size() - at != size_t(extra_size) + SNAP_SIZE) {
+            return false;
+        }
+        out.frame = head.frame;
+        out.extra.assign(bytes.begin() + at, bytes.begin() + at + extra_size);
+        out.ram.assign(bytes.begin() + at + extra_size, bytes.end());
+        return true;
+    }
+
     void take_up(uint8_t* rdram, const Snapshot& snap) {
         // The runtime keeps a native pointer in each of the game's threads (ultramodern's OSThread: its context, 8 bytes
         // at +0x20), which is this copy's and no other's: it stays as this copy has it, in each thread both copies
@@ -728,6 +756,41 @@ bool netplay::party_save(uint64_t& frame, int& players) {
     return true;
 }
 
+bool netplay::detail::party_bytes(std::vector<uint8_t>& out) {
+    std::string file = party_path();
+    FILE* f = file.empty() ? nullptr : fopen(file.c_str(), "rb");
+    if (f == nullptr) {
+        return false;
+    }
+    out.clear();
+    uint8_t buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        out.insert(out.end(), buf, buf + n);
+    }
+    fclose(f);
+    PartySave head;
+    return snapshot_head(out, head);
+}
+
+bool netplay::detail::snapshot_head(const std::vector<uint8_t>& bytes, PartySave& head) {
+    Snapshot snap;
+    return snapshot_from_bytes(bytes, snap, head);
+}
+
+namespace {
+    bool resync_pending = false;
+    Snapshot to_resync;
+}
+
+void netplay::detail::resync_with(std::vector<uint8_t> bytes) {
+    PartySave head;
+    if (snapshot_from_bytes(bytes, to_resync, head)) {
+        party_id = head.id;
+        resync_pending = true;
+    }
+}
+
 void netplay::detail::resume_party() {
     PartySave head;
     if (party_resumable(head) && read_snapshot(party_path(), to_resume)) {
@@ -773,6 +836,36 @@ Frame netplay::advance(uint8_t* rdram) {
         snprintf(line, sizeof(line), "[netplay] resumed the party at its frame %" PRIu64 "\n", frame_no);
         log_session_line(line);
     }
+    if (resync_pending) {
+        // A resync: every copy is at the same session frame here, the game anywhere; it goes back to the host's party
+        // save, the start of a scene, the processes the save has yet to start put aside first.
+        resync_pending = false;
+        if (game.before_take_up != nullptr) {
+            game.before_take_up(rdram);
+        }
+        std::vector<Range> live;
+        if (game.live_ranges != nullptr) {
+            game.live_ranges(rdram, live);
+        }
+        std::vector<std::vector<uint8_t>> kept;
+        for (const Range& r : live) {
+            uint32_t from = r.start - 0x80000000u, to = r.end - 0x80000000u;
+            kept.emplace_back(rdram + from, rdram + to);
+        }
+        take_up(rdram, to_resync);
+        for (size_t i = 0; i < live.size(); i++) {
+            memcpy(rdram + (live[i].start - 0x80000000u), kept[i].data(), kept[i].size());
+        }
+        if (game.after_take_up != nullptr) {
+            game.after_take_up(rdram);
+        }
+        to_resync = Snapshot{};
+        party_saved_frame = frame_no;
+        char line[128];
+        snprintf(line, sizeof(line), "[netplay] resynced: took up the party's save of frame %" PRIu64 "\n", frame_no);
+        fputs(line, stderr);
+        log_session_line(line);
+    }
     static int64_t poke_frame = -1;
     static uint32_t poke_address = 0;
     if (frame_no == 0) {
@@ -786,6 +879,7 @@ Frame netplay::advance(uint8_t* rdram) {
     }
     if (int64_t(frame_no) == poke_frame && poke_address >= 0x80000000u && poke_address < 0x80000000u + RDRAM_SIZE) {
         rdram[poke_address - 0x80000000u] ^= 0x5A;
+        poke_frame = -1; // once: a resync takes the game back to an earlier frame
     }
     FrameHash h = hash_state(rdram);
     for (int64_t f : snapshot_frames) {

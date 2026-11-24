@@ -267,6 +267,10 @@ if (MP_NETPLAY)
         ${CMAKE_SOURCE_DIR}/src/netplay/online_tab.cpp
         ${CMAKE_SOURCE_DIR}/src/netplay/online_screens.cpp
     )
+    # zstd, which RT64 builds, compresses the party save a resync sends a copy that hasn't it (core/session.cpp).
+    target_link_libraries(MarioPartyRecompiled PRIVATE libzstd_static)
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/src/netplay/core/session.cpp PROPERTIES
+        INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/zstd/lib)
     # The build's commit, for the session's handshake: two copies of different commits may play differently.
     execute_process(COMMAND git rev-parse --short=12 HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         OUTPUT_VARIABLE MP_BUILD_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)

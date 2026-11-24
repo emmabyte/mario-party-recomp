@@ -73,4 +73,11 @@ namespace netplay::detail {
     extern int party_player; // this copy's player, for its party saves
     bool party_resumable(PartySave& out);
     void resume_party();
+
+    // The resync (session.cpp): after a desync every copy takes up the host's last party save at the same frame. The
+    // save goes about as party.snap's bytes: party_bytes reads this copy's, snapshot_head reads such bytes' header, and
+    // resync_with has the copy take them up at the start of its next frame.
+    bool party_bytes(std::vector<uint8_t>& out);
+    bool snapshot_head(const std::vector<uint8_t>& bytes, PartySave& head);
+    void resync_with(std::vector<uint8_t> bytes);
 }

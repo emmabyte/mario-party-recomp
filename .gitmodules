@@ -16,4 +16,4 @@
 [submodule "lib/mario-party-engine"]
 	path = lib/mario-party-engine
 	url = https://github.com/emmabyte/mario-party-engine
-	branch = prc-started
+	branch = prc-end

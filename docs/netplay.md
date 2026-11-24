@@ -106,15 +106,24 @@ Each copy keeps a record of its session in `netplay/sessions/<time>-p<player>/`,
 ten): `inputs.mpnp` and its `.hash`, a recording `MP_NETPLAY_REPLAY` plays with `host.save` as the save, and
 `session.log`, what the session said, with how long frames waited for the others every 10 seconds. If two copies ever
 differ, both name the frame and swap its hashes of each 4 KB page of RDRAM, so each `session.log` names the pages that
-differ; both then play on to the same frame, 60 after it, write RDRAM there to `desync-frame<n>.rdram` in the record,
-and stop. `tools/netplay_rdram_diff.py` names what differs between the two copies' files by symbol, and replaying each
+differ; both then play on to the same frame, 60 after it, and write RDRAM there to `desync-frame<n>.rdram` in the
+record. Then the session resyncs rather than ending: the host picks a frame after every frame it has sent, holds it
+back until each guest has the host's last party save (its own `party.snap` when that is the same, or else the host's,
+zstd-compressed, about 400 KB, in pieces it asks for), and after that frame every copy takes the save up in the running
+game, with a "Resyncing" notice over it meanwhile. Taking it up mid-play first ends the threads of the processes the
+save hasn't started (lib/mario-party-engine's `mp_prc_end`) and keeps what the hash leaves out as it is, the system
+threads' queues and stacks, which go with what those threads are doing now; the graphics' message ring
+(`gMesgRingBuffer`) comes from the save, left out of the hash, since the copy's own froze the game. The players go back
+to the start of the scene; a session that can't (no save, or eight resyncs) ends as before. A session's record isn't
+replayable past a resync. `MP_NETPLAY_TEST_SEND_SAVE` on a guest has the host send its save whatever the guest has, for
+the tests. `tools/netplay_rdram_diff.py` names what differs between the two copies' files by symbol, and replaying each
 copy's record on one computer shows which went its own way. `MP_NETPLAY_TEST_POKE=<frame>:<address>` changes a word of
 RDRAM at that frame, a desync to test this with (`NETPLAY_TEST_GUEST_ENV` passes it to the session test's guests). During a session, a recording or a replay the patches that work out game state from the window's shape (a board's camera, a widened stage) take it as 16:9 whatever the window (`mp_play_aspect_ratio`, src/game/recomp_api.cpp), so that copies with windows of different shapes keep the same game; `NETPLAY_TEST_GUEST_WINDOW` gives the session test's guests another window. A guest that leaves during a session (its window closed, which sends a goodbye, or quiet for 5
 seconds) doesn't end it: the host plays on with that player's inputs empty from the first frame it lacks, and each
 frame's `left` mask (carried in the frames the host sends and in recordings) has the game make that player a computer
 player (`mario_party.cpp`'s take_over_left). A host that leaves (its goodbye, or quiet for 15 seconds) ends its guests'
 sessions, and Resume Party picks the party up again. A session that ends for a reason (copies that differ, the host
-gone, a desync, a host not found) shows it in a window before the program closes, as stderr reaches no one from the Windows
+gone, a desync it can't resync, a host not found) shows it in a window before the program closes, as stderr reaches no one from the Windows
 build (`MP_NETPLAY_NO_MESSAGES` leaves the window out, for the tests).
 
 Online, the game makes its sound as its frames come: each frame steps the sound driver as many retraces (2 to 4) as

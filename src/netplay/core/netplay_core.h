@@ -48,6 +48,9 @@ namespace netplay {
         // The ports whose player has left the session (bit n: port n), whose inputs are empty from then on: the game
         // has a computer player take their place.
         uint8_t left = 0;
+        // The copies take up the host's last party save together after this frame, to play on alike after a desync
+        // (session.cpp's resync).
+        bool resync = false;
     };
 
     // A stretch of RDRAM by its KSEG0 addresses, end excluded.
@@ -85,6 +88,19 @@ namespace netplay {
         bool (*can_snapshot)(const uint8_t* rdram) = nullptr;
         std::vector<uint8_t> (*extra_state)() = nullptr;
         void (*set_extra_state)(const std::vector<uint8_t>& state) = nullptr;
+        // Before a snapshot is taken up in the middle of play (a resync), when the game may be anywhere: puts aside
+        // whatever it keeps on native stacks that the snapshot's frame (one can_snapshot allowed) wouldn't have.
+        // Optional.
+        void (*before_take_up)(uint8_t* rdram) = nullptr;
+        // RDRAM a snapshot taken up in the middle of play keeps as it is: what the system threads and the runtime keep
+        // there as real time passes (message queues, threads), and the display lists still being drawn, which go with
+        // what those are doing now and not with the snapshot's. Optional.
+        void (*live_ranges)(const uint8_t* rdram, std::vector<Range>& out) = nullptr;
+        // Once such a snapshot is taken up, with the live ranges put back. Optional.
+        void (*after_take_up)(uint8_t* rdram) = nullptr;
+        // Shows the players, or stops showing, that the session is putting the copies back in step after a desync,
+        // as the game waits. Optional.
+        void (*show_resync)(bool shown) = nullptr;
     };
 
     enum class Mode { Off, Record, Replay, Session };

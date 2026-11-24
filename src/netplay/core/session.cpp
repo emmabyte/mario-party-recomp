@@ -38,9 +38,11 @@
 // first frame the host hasn't acknowledged, the first whole frame it still needs, and the hashes of the game state it
 // made for its last frames. The host's to each guest: the whole frames from the first that guest still needs, the
 // first of that guest's inputs it still needs, and its own last hashes. The host compares every guest's hashes with
-// its own, and each guest the host's: a frame whose hashes differ ends the session and names the frame, since from
-// there the games differ: the two copies swap that frame's hashes of each 4 KB page (KIND_DESYNC), play on to the same
-// frame and write RDRAM there to the session's record, so the record says where the games went apart.
+// its own, and each guest the host's: a frame whose hashes differ is a desync, since from there the games differ: the
+// two copies swap that frame's hashes of each 4 KB page (KIND_DESYNC), play on to the same frame and write RDRAM there
+// to the session's record, so the record says where the games went apart. Then the copies resync (start_resync): the
+// host has every copy take up its last party save after the same frame, which it holds back until each guest has the
+// save (KIND_RESYNC, KIND_RESYNC_ACK, KIND_SAVE_PIECE), and the hashes compare again from the frame after.
 //
 // A guest that leaves (its goodbye as its window closes, or quiet for drop_ms) doesn't end the host's session: from the
 // first frame of its inputs the host lacks, they're empty and the frame's left mask says so, which the game reads to
@@ -49,6 +51,8 @@
 
 #include "netplay_internal.h"
 #include "udp.h"
+
+#include "zstd.h"
 
 #include <algorithm>
 #include <chrono>
@@ -73,13 +77,20 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
     constexpr uint32_t SESSION_MAGIC = 0x534E504D; // "MPNS"
-    constexpr uint32_t SESSION_VERSION = 7;
+    constexpr uint32_t SESSION_VERSION = 8;
     constexpr uint8_t KIND_HELLO = 0;
     constexpr uint8_t KIND_INPUTS = 1; // a guest's to the host
     constexpr uint8_t KIND_FRAMES = 2; // the host's to a guest
     constexpr uint8_t KIND_BYE = 3;    // a copy leaving the lobby
     constexpr uint8_t KIND_DESYNC = 4; // a desynced frame's page hashes, to name what differs
     constexpr uint32_t PAGES_SENT = 160; // page hashes a desync packet carries
+    constexpr uint8_t KIND_RESYNC = 5;      // the host's to a guest: the frame the copies resync after, and the save
+    constexpr uint8_t KIND_RESYNC_ACK = 6;  // a guest's to the host: it has the save, or the pieces it still wants
+    constexpr uint8_t KIND_SAVE_PIECE = 7;  // the host's to a guest: a piece of the save, compressed
+    constexpr uint32_t PIECE_SIZE = 1200;
+    constexpr uint32_t PIECES_WANTED = 96;  // pieces a guest asks for at once
+    constexpr int MAX_RESYNCS = 8;          // a session that keeps desyncing ends after this many
+    constexpr uint8_t LEFT_RESYNC = 0x80;   // in a whole frame's left byte: the copies resync after this frame
     constexpr int MAX_SEND = 24;
     constexpr int HASHES_SENT = 4;
     constexpr size_t MAX_IDENTITY = 800;
@@ -151,6 +162,8 @@ namespace {
         std::string name;
         // A party the host resumes: whether this guest's copy has its save (0 not yet said, 1 yes, 2 no).
         uint8_t has_party = 0;
+        // On the host: this guest has the save the copies resync with (KIND_RESYNC_ACK).
+        bool resync_ready = false;
         // On the host, a guest that left during the session (said goodbye, or went quiet for drop_ms): the first
         // frame its inputs are empty from, where a computer player takes its place (Frame's left). UINT32_MAX: still in.
         uint32_t left_from = UINT32_MAX;
@@ -195,6 +208,7 @@ namespace {
         void u32(uint32_t v) { for (int i = 0; i < 4; i++) u8(uint8_t(v >> (8 * i))); }
         void u64(uint64_t v) { u32(uint32_t(v)); u32(uint32_t(v >> 32)); }
         void pad(const Pad& p) { u16(p.button); u8(uint8_t(p.stick_x)); u8(uint8_t(p.stick_y)); u8(p.err_no); }
+        void bytes(const uint8_t* p, size_t size) { for (size_t i = 0; i < size; i++) u8(p[i]); }
     };
     struct Reader {
         const uint8_t* buf;
@@ -206,6 +220,20 @@ namespace {
         uint64_t u64() { uint64_t lo = u32(); return lo | (uint64_t(u32()) << 32); }
         Pad pad() { Pad p; p.button = u16(); p.stick_x = int8_t(u8()); p.stick_y = int8_t(u8()); p.err_no = u8(); return p; }
     };
+
+    // A resync (start_resync): after a desync the host has every copy take up its last party save after the same frame,
+    // resync_at, and holds that frame back until each guest has the save: from its own party.snap when it is the
+    // same, or else in pieces from the host's, compressed (KIND_SAVE_PIECE).
+    bool resyncing = false;
+    uint32_t resync_at = UINT32_MAX;
+    uint32_t last_resync_at = UINT32_MAX; // the frame of the last resync: a desync before it is over
+    PartySave resync_head;
+    std::vector<uint8_t> resync_bytes;   // the save, as party.snap's bytes
+    std::vector<uint8_t> resync_packed;  // compressed: the host's to send, a guest's as its pieces come
+    uint32_t resync_raw_size = 0;
+    std::vector<uint8_t> piece_have;     // a guest's: the pieces that have come
+    bool resync_ready = false;           // a guest's: it has the save
+    int resyncs = 0;
 
     // The save the session plays from: the host's own, which a guest has from the host's hello.
     std::vector<uint8_t> host_save;
@@ -446,6 +474,9 @@ namespace {
         for (int p = 1; p < players; p++) {
             if (remotes[p].left_from == UINT32_MAX) {
                 ready = std::min(ready, remotes[p].next);
+                if (resyncing && !remotes[p].resync_ready) {
+                    ready = std::min(ready, resync_at); // the frame the copies resync after waits for its save
+                }
             }
         }
         return ready;
@@ -514,13 +545,53 @@ namespace {
                     }
                 }
                 w.u8(local_vis[f]);
-                w.u8(left_at(f));
+                w.u8(uint8_t(left_at(f) | (resyncing && f == resync_at ? LEFT_RESYNC : 0)));
             }
             put_hashes(w);
             put_clock(w, guest);
             w.u8(uint8_t(target_delay));
             send(guest, w);
+            if (resyncing && !guest.resync_ready) {
+                Writer rw;
+                header(rw, KIND_RESYNC);
+                rw.u32(resync_at);
+                rw.u64(resync_head.frame);
+                rw.u64(resync_head.hash);
+                rw.u64(resync_head.id);
+                rw.u32(resync_raw_size);
+                rw.u32(uint32_t(resync_packed.size()));
+                send(guest, rw);
+            }
         }
+    }
+
+    uint32_t pieces_of(size_t size) {
+        return uint32_t((size + PIECE_SIZE - 1) / PIECE_SIZE);
+    }
+
+    // A guest's answer to the host's KIND_RESYNC: it has the save, or the pieces it still wants, from the first missing.
+    void send_resync_ack() {
+        Writer w;
+        header(w, KIND_RESYNC_ACK);
+        w.u32(resync_at);
+        w.u8(resync_ready ? 1 : 0);
+        uint32_t first = 0;
+        while (first < piece_have.size() && piece_have[first]) {
+            first++;
+        }
+        uint32_t count = 0;
+        std::vector<uint32_t> wanted;
+        for (uint32_t i = first; i < piece_have.size() && count < PIECES_WANTED; i++) {
+            if (!piece_have[i]) {
+                wanted.push_back(i);
+                count++;
+            }
+        }
+        w.u8(uint8_t(std::min<size_t>(wanted.size(), 255)));
+        for (size_t i = 0; i < wanted.size() && i < 255; i++) {
+            w.u32(wanted[i]);
+        }
+        send(remotes[0], w);
     }
 
     void send_all() {
@@ -528,6 +599,9 @@ namespace {
             send_frames();
         } else {
             send_inputs();
+            if (resyncing) {
+                send_resync_ack();
+            }
         }
     }
 
@@ -581,6 +655,8 @@ namespace {
     // A desync: which 4 KB pages of RDRAM differ, from the page hashes the two copies swap (KIND_DESYNC), so the
     // session's log names where the games went apart, and RDRAM as it is now, to diff with the other copy's.
     bool desyncing = false;
+    bool resync_failed = false;
+    bool desync_logged = false;
     uint32_t desync_frame = 0;
     std::vector<uint64_t> their_pages;
     std::vector<uint8_t> their_have;
@@ -665,18 +741,175 @@ namespace {
         say("[netplay] frame %u differs from player %d's: the session has desynced\n", f, who + 1);
     }
 
-    // Each frame after a desync: the pages to the other copy, and at the frame both stop at, RDRAM and the end.
+    // The resync, on the host, once a desync is found: every copy takes up the host's last party save after resync_at,
+    // which waits for each guest to have it. Without a save to go back to, the session ends as it did before.
+    bool start_resync() {
+        if (resyncs >= MAX_RESYNCS || !party_bytes(resync_bytes) || !snapshot_head(resync_bytes, resync_head)) {
+            return false;
+        }
+        resync_packed.resize(ZSTD_compressBound(resync_bytes.size()));
+        size_t packed = ZSTD_compress(resync_packed.data(), resync_packed.size(), resync_bytes.data(),
+                resync_bytes.size(), 1);
+        if (ZSTD_isError(packed)) {
+            return false;
+        }
+        resync_packed.resize(packed);
+        resync_raw_size = uint32_t(resync_bytes.size());
+        // After the frame both copies write RDRAM at for the record, and after every frame already sent.
+        resync_at = std::max<uint32_t>(std::max<uint32_t>(frames_sent_to, wholes_ready()), desync_frame + DESYNC_PLAY + 1);
+        resyncing = true;
+        resyncs++;
+        for (int p = 1; p < players; p++) {
+            remotes[p].resync_ready = false;
+        }
+        say("[netplay] resyncing: every copy goes back to the host's save of frame %" PRIu64 " after frame %u (%zu KB "
+            "to send a copy without it)\n", resync_head.frame, resync_at, resync_packed.size() / 1024);
+        if (game.show_resync != nullptr) {
+            game.show_resync(true);
+        }
+        return true;
+    }
+
+    // On a guest, the host's KIND_RESYNC: the save is this copy's own party.snap when it is the same, or else comes in
+    // pieces.
+    void take_resync(Reader& r) {
+        uint32_t at = r.u32();
+        PartySave head;
+        head.frame = r.u64();
+        head.hash = r.u64();
+        head.id = r.u64();
+        uint32_t raw = r.u32();
+        uint32_t packed = r.u32();
+        if (!r.ok || (resyncing && at == resync_at)) {
+            return;
+        }
+        resyncing = true;
+        resync_at = at;
+        resync_head = head;
+        resync_raw_size = raw;
+        PartySave mine;
+        // MP_NETPLAY_TEST_SEND_SAVE, for the tests: the host sends its save whatever this copy has.
+        resync_ready = getenv("MP_NETPLAY_TEST_SEND_SAVE") == nullptr && party_bytes(resync_bytes) &&
+            snapshot_head(resync_bytes, mine) && mine.frame == head.frame && mine.hash == head.hash && mine.id == head.id;
+        if (!resync_ready) {
+            resync_bytes.clear();
+            resync_packed.assign(packed, 0);
+            piece_have.assign(pieces_of(packed), 0);
+        } else {
+            resync_packed.clear();
+            piece_have.clear();
+        }
+        say("[netplay] resyncing: going back to the host's save of frame %" PRIu64 " after frame %u (%s)\n", head.frame,
+            at, resync_ready ? "this copy has it" : "the host sends it");
+        if (game.show_resync != nullptr) {
+            game.show_resync(true);
+        }
+        send_resync_ack();
+    }
+
+    // On a guest, a piece of the save; once all have come, the save.
+    void take_piece(Reader& r) {
+        uint32_t at = r.u32();
+        uint32_t index = r.u32();
+        uint32_t size = r.u16();
+        if (!r.ok || !resyncing || resync_ready || at != resync_at || index >= piece_have.size() ||
+                size_t(index) * PIECE_SIZE + size > resync_packed.size() || r.at + size > r.n) {
+            return;
+        }
+        memcpy(resync_packed.data() + size_t(index) * PIECE_SIZE, r.buf + r.at, size);
+        piece_have[index] = 1;
+        if (std::find(piece_have.begin(), piece_have.end(), 0) != piece_have.end()) {
+            // Asks for more once the pieces asked for last have come, rather than at the next frame.
+            if (index + 1 == piece_have.size() || (index + 1) % PIECES_WANTED == 0) {
+                send_resync_ack();
+            }
+            return;
+        }
+        resync_bytes.resize(resync_raw_size);
+        size_t got = ZSTD_decompress(resync_bytes.data(), resync_bytes.size(), resync_packed.data(), resync_packed.size());
+        PartySave head;
+        if (ZSTD_isError(got) || got != resync_raw_size || !snapshot_head(resync_bytes, head) ||
+                head.hash != resync_head.hash || head.frame != resync_head.frame) {
+            say("[netplay] the host's save came damaged: asking again\n");
+            piece_have.assign(piece_have.size(), 0);
+            resync_bytes.clear();
+            return;
+        }
+        resync_packed.clear();
+        resync_ready = true;
+        say("[netplay] has the host's save\n");
+        send_resync_ack();
+    }
+
+    // On the host, a guest's KIND_RESYNC_ACK: it has the save, or the pieces it wants next.
+    void take_resync_ack(Reader& r, Remote& guest) {
+        uint32_t at = r.u32();
+        uint8_t ready = r.u8();
+        uint32_t count = r.u8();
+        if (!r.ok || !resyncing || at != resync_at) {
+            return;
+        }
+        if (ready) {
+            guest.resync_ready = true;
+            return;
+        }
+        for (uint32_t i = 0; i < count; i++) {
+            uint32_t index = r.u32();
+            if (!r.ok || index >= pieces_of(resync_packed.size())) {
+                return;
+            }
+            Writer w;
+            header(w, KIND_SAVE_PIECE);
+            w.u32(resync_at);
+            w.u32(index);
+            size_t from = size_t(index) * PIECE_SIZE;
+            uint32_t size = uint32_t(std::min<size_t>(PIECE_SIZE, resync_packed.size() - from));
+            w.u16(uint16_t(size));
+            w.bytes(resync_packed.data() + from, size);
+            send(guest, w);
+        }
+    }
+
+    // After the frame the copies resync after: from the next frame, the hashes compare again.
+    void finish_resync() {
+        last_resync_at = resync_at;
+        resync_with(std::move(resync_bytes));
+        resync_bytes.clear();
+        resync_packed.clear();
+        piece_have.clear();
+        resyncing = false;
+        resync_ready = false;
+        desyncing = false;
+        desync_logged = false;
+        for (Remote& r : remotes) {
+            r.resync_ready = false;
+            r.compare_from = std::max<uint32_t>(r.compare_from, resync_at + 1);
+            while (!r.hashes.empty() && r.hashes.front().first <= resync_at) {
+                r.hashes.pop_front();
+            }
+        }
+        if (game.show_resync != nullptr) {
+            game.show_resync(false);
+        }
+    }
+
+    // Each frame after a desync: the pages to the other copy, and at the frame both stop at, RDRAM for the record and
+    // the resync (the host starts it; a guest waits for the host's).
     void desync_frame_step() {
         if (!desyncing) {
             return;
+        }
+        if (hosting && !resyncing && !start_resync()) {
+            resync_failed = true;
         }
         Remote& other = remotes[hosting ? desync_who : 0];
         if (sframe % 4 == 0) {
             send_pages(other, desync_frame);
         }
-        if (sframe < uint64_t(desync_frame) + DESYNC_PLAY) {
+        if (desync_logged || sframe < uint64_t(desync_frame) + DESYNC_PLAY) {
             return;
         }
+        desync_logged = true;
         dump_rdram_now("desync-frame" + std::to_string(sframe));
         auto until = Clock::now() + std::chrono::milliseconds(1000);
         while (Clock::now() < until && std::find(their_have.begin(), their_have.end(), 0) != their_have.end()) {
@@ -688,7 +921,10 @@ namespace {
             send_pages(other, desync_frame); // the other may still be waiting for this copy's
         }
         log_differing_pages(desync_who);
-        end_session(2);
+        if (resync_failed) {
+            say("[netplay] the session can't go back to a save of the party: it has ended\n");
+            end_session(2);
+        }
     }
 
     void compare_hashes(Remote& from, int who) {
@@ -1005,12 +1241,18 @@ namespace {
             if (handshaken && from.left_from == UINT32_MAX) { // its buffers are made once the handshake ends
                 take_inputs(r, from, who);
             }
+        } else if (kind == KIND_RESYNC && handshaken && !hosting) {
+            take_resync(r);
+        } else if (kind == KIND_SAVE_PIECE && handshaken && !hosting) {
+            take_piece(r);
+        } else if (kind == KIND_RESYNC_ACK && handshaken && hosting) {
+            take_resync_ack(r, from);
         } else if (kind == KIND_DESYNC && handshaken) {
             if (!desyncing) {
                 // The other copy found the frame first: this one names it too, with the frame the other names.
                 Reader peek = r;
                 uint32_t f = peek.u32();
-                if (peek.ok && f < local_hashes.size()) {
+                if (peek.ok && f < local_hashes.size() && (last_resync_at == UINT32_MAX || f > last_resync_at)) {
                     desyncing = true;
                     desync_frame = f;
                     their_pages.assign(PAGES, 0);
@@ -1617,12 +1859,18 @@ Frame netplay::detail::session_frame(uint64_t hash) {
     Frame fr;
     fr.connected = uint8_t(connected_mask);
     fr.vis = hosting ? local_vis[sframe] : wholes_vis[sframe];
-    fr.left = hosting ? left_at(uint32_t(sframe)) : wholes_left[sframe];
+    uint8_t left = hosting ? uint8_t(left_at(uint32_t(sframe)) | (resyncing && sframe == resync_at ? LEFT_RESYNC : 0))
+                           : wholes_left[sframe];
+    fr.left = left & ~LEFT_RESYNC;
+    fr.resync = (left & LEFT_RESYNC) != 0;
     for (int q = 0; q < players; q++) {
         Inputs in = hosting ? input_of(q, uint32_t(sframe)) : wholes[sframe][q];
         for (int i = 0; i < game.samples_per_frame; i++) {
             fr.samples[i][q] = in[i];
         }
+    }
+    if (fr.resync) {
+        finish_resync(); // the copies take up the save at the start of the next frame
     }
     sframe++;
     return fr;

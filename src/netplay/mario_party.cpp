@@ -43,6 +43,7 @@
 // The environment: netplay_core.cpp lists the core's variables. MP_NETPLAY_MINIGAMES is this file's, for the tests.
 
 #include "netplay.h"
+#include "recompui/recompui.h"
 #include "core/netplay_core.h"
 
 #include <algorithm>
@@ -141,6 +142,15 @@ namespace {
         { 0x800F37DC, 0x800F37E0 },
         { 0x800F3838, 0x800F3840 }, // nextFrameBuffer, D_800F383C (the VI count)
         { 0x802E0000, 0x80360000 }, // the audio heap (func_8000B00C's, src/B980.c)
+    };
+
+    // Left out of the hash but not kept through a resync (live_ranges): D_800ECB2C, a flag of the sound driver's, and
+    // ringBufferIndex, where the graphics' messages have got to in gMesgRingBuffer (0x20 of 0x14 bytes,
+    // src/engine/graphics.c). Two copies' differ once they have gone back to a save, by what each had in flight; the
+    // game's own, from the save, go with the frames it then makes (the copy's in flight kept, it froze).
+    constexpr Range unhashed[] = {
+        { 0x800ECB2C, 0x800ECB30 },
+        { 0x800ECE20, 0x800ED0A0 },
     };
 
     // The game's heaps (src/59E80.c): a ring of HeapNodes, each 0x10 bytes (size with the node, 0xA5, used, prev, next)
@@ -249,6 +259,7 @@ namespace {
         zero_free_blocks(rdram, MAIN_HEAP);
         zero_free_blocks(rdram, TEMP_HEAP);
         std::vector<Range> left_out(std::begin(excluded), std::end(excluded));
+        left_out.insert(left_out.end(), std::begin(unhashed), std::end(unhashed));
         for (auto [lo, hi] : process_stacks(rdram)) {
             left_out.push_back({ lo, hi });
         }
@@ -429,6 +440,7 @@ bool mp_netplay::fixed_aspect() {
 }
 
 static bool can_snapshot(const uint8_t* rdram);
+static void before_take_up(uint8_t* rdram);
 static std::vector<uint8_t> extra_state();
 static void set_extra_state(const std::vector<uint8_t>& in);
 
@@ -446,6 +458,19 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
         return folder;
     };
     game.can_snapshot = can_snapshot;
+    game.before_take_up = before_take_up;
+    game.live_ranges = [](const uint8_t*, std::vector<netplay::Range>& out) {
+        // What the hash leaves out (excluded): the system threads' and the runtime's, as real time passes.
+        out.assign(std::begin(excluded), std::end(excluded));
+    };
+    game.show_resync = [](bool shown) {
+        // Over the game, which waits meanwhile: the save on its way, and the game going back to it.
+        if (shown) {
+            recompui::open_notification("Resyncing", "Getting everyone's game back in step...");
+        } else {
+            recompui::close_prompt();
+        }
+    };
     game.frame_vis = []() {
         // The VIs since the last frame, 2 to 4; a longer stall is carried into the next frames, a little at a time.
         uint32_t now = real_vis.load();
@@ -653,6 +678,7 @@ extern "C" int mp_netplay_vi_client(uint8_t* rdram, gpr queue, gpr message) {
 }
 
 std::vector<uint32_t> mp_prc_started();
+void mp_prc_end(uint32_t key);
 std::vector<uint32_t> mp_overlays_loaded();
 void mp_overlays_reload(const std::vector<uint32_t>& triples);
 void save_read(uint8_t* rdram, PTR(void) rdram_address, uint32_t offset, uint32_t count);
@@ -678,6 +704,17 @@ static bool can_snapshot(const uint8_t* rdram) {
         }
     }
     return loader_sending == 0;
+}
+
+// Before a resync takes up a party save in the middle of play: ends the thread of every process that has started but
+// the three the game keeps (whose loops stand where the save's do), so that the save's processes, none of which had
+// started, start afresh from RDRAM at their next resume (lib/mario-party-engine's mp_prc_end).
+static void before_take_up(uint8_t* rdram) {
+    for (uint32_t key : mp_prc_started()) {
+        if (!is_kept_process(read_word(rdram, key + 0x30))) {
+            mp_prc_end(key);
+        }
+    }
 }
 
 static std::vector<uint8_t> extra_state() {
