@@ -162,7 +162,8 @@ text = "{ gpr mp_wipe_picture_sides(uint8_t*, gpr); ctx->r2 = mp_wipe_picture_si
 # says how): where its setup has loaded the cloud (func_800F6B14_MinigameInstructions, its form's index in v0, just
 # back from LoadFormFile), where the cloud's grow and turn are over (L_800F6CFC, with or without the cloud), and in
 # each of func_800247FC's three walks of the forms, where it has loaded a form's flags (s0 the form; v0, v0 and v1 the
-# flags) and is about to test their 0x4.
+# flags) and is about to test their 0x4. The same three walks hide a Coin Block Blitz form scaled past 20 times
+# (src/game/coin_block_blitz.cpp says why).
 [[patches.hook]]
 func = "func_800F6B14_MinigameInstructions"
 before_vram = 0x800F6B7C
@@ -176,17 +177,17 @@ text = "{ void mp_instructions_cloud_end(uint8_t*); mp_instructions_cloud_end(rd
 [[patches.hook]]
 func = "func_800247FC"
 before_vram = 0x800248CC
-text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_instructions_form_flags(rdram, ctx->r2, ctx->r16); }"
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_coin_block_blitz_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_coin_block_blitz_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r2, ctx->r16), ctx->r16); }"
 
 [[patches.hook]]
 func = "func_800247FC"
 before_vram = 0x80024BF8
-text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_instructions_form_flags(rdram, ctx->r2, ctx->r16); }"
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_coin_block_blitz_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_coin_block_blitz_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r2, ctx->r16), ctx->r16); }"
 
 [[patches.hook]]
 func = "func_800247FC"
 before_vram = 0x80025228
-text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); ctx->r3 = mp_instructions_form_flags(rdram, ctx->r3, ctx->r16); }"
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_coin_block_blitz_form_flags(uint8_t*, gpr, gpr); ctx->r3 = mp_coin_block_blitz_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r3, ctx->r16), ctx->r16); }"
 
 # A minigame's instructions screen past 4:3 (patches/instructions.c says how): after its setup has placed and scaled
 # each of the two strips of cloud along the bottom (form 0xB000A, then 0xB000B, each in s0), a copy of it on each side.
@@ -259,6 +260,15 @@ text = "{ void widescreen_bumper_sea(uint8_t*, recomp_context*); recomp_context 
 func = "func_800FA454_MushroomMixup"
 before_vram = 0x800FA4E4
 text = "{ void widescreen_mushroom_sea(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r17; widescreen_mushroom_sea(rdram, ctx); *ctx = saved; }"
+
+# Mushroom Mixup's Bloopers hidden past the picture's edge rather than 4:3's (patches/widescreen.c,
+# widescreen_blooper_gone): the Blooper's frame function, the object in s2 and its player in s3, where both of its
+# measures of x against 1000 or -1000 meet with v1 1 if past it, before it reads v1 to hide the two. v1 is given the
+# patch's answer and the game's other registers are kept.
+[[patches.hook]]
+func = "func_800FB238_MushroomMixup"
+before_vram = 0x800FB9E8
+text = "{ void widescreen_blooper_gone(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; ctx->r5 = ctx->r19; ctx->r6 = ctx->r3; widescreen_blooper_gone(rdram, ctx); saved.r3 = ctx->r2; *ctx = saved; }"
 
 # Paddle Battle's river: its four water sections moved so their edges meet (patches/paddle_battle.c), once its setup
 # (func_800FBC00_PaddleBattle) has placed the last, with its object in s2. The game's registers are kept around the call.
