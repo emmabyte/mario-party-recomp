@@ -136,6 +136,9 @@ namespace {
         { 0x800F0A64, 0x800F2A70 }, // a thread's stack
         { 0x800F3370, 0x800F3388 }, // a message queue
         { 0x800F3758, 0x800F375C }, // D_800F3758: a count of frames shown
+        // D_800F37DC: where the frame's display list has got to, which reaches further in a window wider than 4:3
+        // (lib/mario-party-engine's camera_view.c adds RT64's commands there) and is only drawn
+        { 0x800F37DC, 0x800F37E0 },
         { 0x800F3838, 0x800F3840 }, // nextFrameBuffer, D_800F383C (the VI count)
         { 0x802E0000, 0x80360000 }, // the audio heap (func_8000B00C's, src/B980.c)
     };
@@ -419,6 +422,10 @@ void mp_netplay::note_sound_gap() {
 
 bool mp_netplay::active() {
     return netplay::mode() == netplay::Mode::Session;
+}
+
+bool mp_netplay::fixed_aspect() {
+    return netplay::active();
 }
 
 static bool can_snapshot(const uint8_t* rdram);

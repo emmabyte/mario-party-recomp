@@ -147,7 +147,8 @@ RECOMP_PATCH void func_800F9700_BuriedTreasure(Gfx* arg0) {
     gSPEndDisplayList(arg0++);
 }
 
-f32 mp_aspect_ratio(void);
+// The picture's shape the game plays by (src/game/recomp_api.cpp): 16:9 during netplay, whatever the window.
+f32 mp_play_aspect_ratio(void);
 
 // Piranha's Pursuit (overlay 0x31) in a picture wider than 4:3. Its ground, the dirt track and the grass behind it, is
 // one object (its models from file 0x450000, set up in func_800FA878_PiranhasPursuit) that the game moves to the
@@ -158,7 +159,7 @@ f32 mp_aspect_ratio(void);
 // each side as the wider view does (its texture stretched as much, and still moving with the track), and the game's
 // own scale of 1 at 4:3.
 void widescreen_piranhas_ground(omObjData* ground) {
-    ground->scale.x = mp_aspect_ratio() * (3.0f / 4.0f);
+    ground->scale.x = mp_play_aspect_ratio() * (3.0f / 4.0f);
 }
 
 // Its 14 trees and bushes along the back of the track, forms 1 to 14 of the same object, which the game keeps within
@@ -213,18 +214,33 @@ void widescreen_piranhas_trees(omObjData* object) {
 }
 
 // The seas and fields of short_scenes that are widened in x as they are made, so that they reach a wide window's edges
-// (board_back_stage_widened, which moves the scene's widest out with them): a sea or a field with nothing standing at
+// (stage_widened, which moves the scene's widest out with them): a sea or a field with nothing standing at
 // its edges, which reads the same wider. A room's walls, a stage built for 4:3 and a painted backdrop keep their cap, and
 // so does Ground Pound's forest floor, whose texture showed smeared stretched that far, bare of the trees past the
 // middle, Flower Shower's field, whose rocky rim around the pond showed stretched with it, and Tightrope Treachery's sea,
 // which keeps its width whatever its object's or its model's scale. us.toml's hooks call these in each one's setup, once
 // the stage is made; the game never writes these scales again.
+// How many times wider a stage measured to reach `widest` is made, as lib/mario-party-engine's
+// board_back_stage_widened works it out (a tenth more than the picture, for a camera that turns a little), but from the
+// picture's shape the game plays by, as the scale is game state.
+#define STAGE_SPARE 1.1f
+
+static f32 stage_widened(f32 widest) {
+    f32 times = mp_play_aspect_ratio() * STAGE_SPARE / widest;
+
+    if (times < 1.0f) {
+        times = 1.0f;
+    }
+    board_back_scene_widest(widest * times);
+    return times;
+}
+
 static void widen_object(omObjData* object, f32 widest) {
-    object->scale.x *= board_back_stage_widened(widest);
+    object->scale.x *= stage_widened(widest);
 }
 
 static void widen_model(s16 model, f32 widest) {
-    D_800F2B7C[model].unk_3C *= board_back_stage_widened(widest);
+    D_800F2B7C[model].unk_3C *= stage_widened(widest);
 }
 
 // Hammer Drop's sea, a grid of 6x6 squares the game builds in code (func_800FA2E0_HammerDrop) from x -2400 to 2400.

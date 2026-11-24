@@ -8,6 +8,7 @@
 void mp_netplay::init(const ultramodern::input::callbacks_t&, const std::string&) {}
 void mp_netplay::start() {}
 bool mp_netplay::active() { return false; }
+bool mp_netplay::fixed_aspect() { return false; }
 void mp_netplay::note_sound_gap() {}
 void mp_netplay::leave() {}
 void mp_netplay::add_settings_tab() {}

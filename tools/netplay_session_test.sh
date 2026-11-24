@@ -13,6 +13,8 @@
 # make a desync, for one): each guest plays from the host's save, so the session matches all the same.
 # NETPLAY_TEST_RESUME=1 plays again in the out dir's folders of a session before, the host resuming its party (the
 # party each copy saved at its last scene's start), to test that every copy takes it up alike.
+# NETPLAY_TEST_GUEST_WINDOW gives the guests' windows another size than the host's 640x480 (1280x540, say), to test
+# that a window's shape changes nothing the game plays by.
 set -euo pipefail
 
 build="$(realpath "$1")"
@@ -82,13 +84,15 @@ drive() {
 run() {
     local name=$1; shift
     local dir; dir="$(new_run "$name")"
+    local window_size=640x480
+    [ "$name" != player1 ] && window_size="${NETPLAY_TEST_GUEST_WINDOW:-640x480}"
     if [ "$name" != player1 ] && [ -n "${NETPLAY_TEST_GUEST_SAVE:-}" ]; then
         mkdir -p "$dir/saves"
         cp "$NETPLAY_TEST_GUEST_SAVE" "$dir/saves/marioparty.n64.us.1.0.bin"
     fi
     (cd "$dir" && exec env MP_NETPLAY_NO_MESSAGES=1 MP_NETPLAY_MINIGAMES="$minigames" MP_NETPLAY_FRAMES="$frames" \
         ${MP_NETPLAY_DELAY:+MP_NETPLAY_DELAY="$MP_NETPLAY_DELAY"} MP_NETPLAY_DROP="${MP_NETPLAY_DROP:-0}" "$@" \
-        "$build/MarioPartyRecompiled" --boot --window 640x480) > "$out/$name.log" 2>&1 < /dev/null &
+        "$build/MarioPartyRecompiled" --boot --window "$window_size") > "$out/$name.log" 2>&1 < /dev/null &
 }
 
 players="${NETPLAY_TEST_PLAYERS:-2}"

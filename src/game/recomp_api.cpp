@@ -10,6 +10,11 @@
 #include "recomp.h"
 #include "librecomp/overlays.hpp"
 #include "librecomp/helpers.hpp"
+#include "../netplay/netplay.h"
+
+namespace mp_display_list {
+    float picture_aspect();
+}
 
 namespace {
     std::mutex loaded_mutex;
@@ -49,4 +54,13 @@ void mp_overlays_reload(const std::vector<uint32_t>& triples) {
         std::lock_guard lock{ loaded_mutex };
         loaded[triples[i]] = { triples[i + 1], triples[i + 2] };
     }
+}
+
+// mp_play_aspect_ratio(): the picture's width over its height for what the patches work out from it that the game plays
+// by (patches/background.c's board camera, patches/widescreen.c's widened stages): the window's
+// (lib/mario-party-engine's mp_aspect_ratio), or 16:9 whatever the window while netplay runs, so that copies with
+// windows of different shapes keep the same game. Drawing still follows the window: a wider one shows black past 16:9's
+// edges where the game has nothing more, a narrower one less of the board.
+extern "C" void mp_play_aspect_ratio(uint8_t* rdram, recomp_context* ctx) {
+    _return(ctx, mp_netplay::fixed_aspect() ? 16.0f / 9.0f : mp_display_list::picture_aspect());
 }

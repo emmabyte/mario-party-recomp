@@ -109,7 +109,7 @@ differ, both name the frame and swap its hashes of each 4 KB page of RDRAM, so e
 differ; both then play on to the same frame, 60 after it, write RDRAM there to `desync-frame<n>.rdram` in the record,
 and stop. `tools/netplay_rdram_diff.py` names what differs between the two copies' files by symbol, and replaying each
 copy's record on one computer shows which went its own way. `MP_NETPLAY_TEST_POKE=<frame>:<address>` changes a word of
-RDRAM at that frame, a desync to test this with (`NETPLAY_TEST_GUEST_ENV` passes it to the session test's guests). A guest that leaves during a session (its window closed, which sends a goodbye, or quiet for 5
+RDRAM at that frame, a desync to test this with (`NETPLAY_TEST_GUEST_ENV` passes it to the session test's guests). During a session, a recording or a replay the patches that work out game state from the window's shape (a board's camera, a widened stage) take it as 16:9 whatever the window (`mp_play_aspect_ratio`, src/game/recomp_api.cpp), so that copies with windows of different shapes keep the same game; `NETPLAY_TEST_GUEST_WINDOW` gives the session test's guests another window. A guest that leaves during a session (its window closed, which sends a goodbye, or quiet for 5
 seconds) doesn't end it: the host plays on with that player's inputs empty from the first frame it lacks, and each
 frame's `left` mask (carried in the frames the host sends and in recordings) has the game make that player a computer
 player (`mario_party.cpp`'s take_over_left). A host that leaves (its goodbye, or quiet for 15 seconds) ends its guests'

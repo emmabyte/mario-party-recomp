@@ -33,6 +33,10 @@ namespace mp_netplay {
 
     // Whether an online session is running: the sound keeps a cushion then (src/main/main.cpp).
     bool active();
+    // Whether the game plays at a fixed picture shape (src/game/recomp_api.cpp's mp_play_aspect_ratio): during a
+    // session, a recording or a replay, where each copy's window may differ and what the patches work out from its shape
+    // (a board's camera, a stage's width) is game state that has to match.
+    bool fixed_aspect();
     // The sound ran dry online (src/main/main.cpp), for session.log's count of gaps.
     void note_sound_gap();
     // As the program closes: tells the other players' copies this one is leaving the session.
