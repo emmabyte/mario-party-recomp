@@ -1,1 +1,2 @@
 - In the Mini-Game House, the red exit door no longer slides out of its archway, with white showing beside it, as the camera turns from it to the Pot o' Skills or the Mini-Game table. The room now turns as one in the frames drawn between the game's own.
+- On the boards in a wide window, characters and props (the players, the Koopa by the path) no longer vanish while still partly on screen at the left and right edges as the camera moves. They are now hidden only once they are fully past the window's edges, as they are past 4:3's on a console.
