@@ -233,6 +233,35 @@ func = "func_800FAEE8_PiranhasPursuit"
 before_vram = 0x800FB030
 text = "{ void widescreen_piranhas_trees(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_trees(rdram, ctx); }"
 
+# Limbo Dance's scenery copied a ring's width away (patches/widescreen.c, widescreen_limbo_scenery): its sprite list's
+# setup, asked for 9 more places as it starts (the length in a0) and with them marked used once it has made them; the
+# setup once it has made the props, as it returns; the frame function once its loop has moved those that fell behind;
+# and the end of a sprite, which turns away a copy's (a0, -1 for none) so its torch's lists aren't freed twice.
+[[patches.hook]]
+func = "func_800FB93C_LimboDance"
+before_vram = 0x800FB93C
+text = "{ void widescreen_limbo_sprites(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_sprites(rdram, ctx); saved.r4 = ctx->r2; *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800FB93C_LimboDance"
+before_vram = 0x800FBAD4
+text = "{ void widescreen_limbo_sprites_made(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_sprites_made(rdram, ctx); *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800FA418_LimboDance"
+before_vram = 0x800FB004
+text = "{ void widescreen_limbo_scenery_copied(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_scenery_copied(rdram, ctx); *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800FB058_LimboDance"
+before_vram = 0x800FB250
+text = "{ void widescreen_limbo_scenery(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_scenery(rdram, ctx); *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800FDE38_LimboDance"
+before_vram = 0x800FDE38
+text = "{ void widescreen_limbo_sprite_freed(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_sprite_freed(rdram, ctx); saved.r4 = ctx->r2; *ctx = saved; }"
+
 # Musical Mushroom's floor carried on past its edges with copies of it (patches/widescreen.c, widescreen_musical_floor):
 # its stage object's setup, with the object in s3, once it has made the floor and is about to return.
 [[patches.hook]]
@@ -366,3 +395,21 @@ text = "{ void mp_model_batch_start(uint8_t*); mp_model_batch_start(rdram); }"
 func = "func_8002E488"
 before_vram = 0x80030D1C
 text = "{ void mp_model_batch_end(uint8_t*); mp_model_batch_end(rdram); }"
+
+# Cast Aways' coins, bags and chests appear and vanish past the window's edges, not 4:3's (patches/cast_aways.c):
+# the item's frame function's bounds, in f0 as it compares the item's screen x in f2 (340 moving right, -20 moving
+# left), and a new item's x, once the spawner has set the item (s2) and its work (s3), before it counts it.
+[[patches.hook]]
+func = "func_800F7A38_CastAways"
+before_vram = 0x800F7E4C
+text = "{ void cast_aways_item_gone_right(uint8_t*, recomp_context*); recomp_context c = *ctx; cast_aways_item_gone_right(rdram, &c); ctx->f0.fl = c.f0.fl; }"
+
+[[patches.hook]]
+func = "func_800F7A38_CastAways"
+before_vram = 0x800F7E68
+text = "{ void cast_aways_item_gone_left(uint8_t*, recomp_context*); recomp_context c = *ctx; cast_aways_item_gone_left(rdram, &c); ctx->f0.fl = c.f0.fl; }"
+
+[[patches.hook]]
+func = "func_800F76B8_CastAways"
+before_vram = 0x800F79BC
+text = "{ void cast_aways_item_spawned(uint8_t*, recomp_context*); recomp_context c = *ctx; c.r4 = ctx->r18; c.r5 = ctx->r19; cast_aways_item_spawned(rdram, &c); }"
