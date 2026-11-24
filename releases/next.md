@@ -1,2 +1,1 @@
-- In Mushroom Mix-Up in a wide window, a player who falls in and the Blooper dragging them away now swim off the side of the screen. Before, both vanished in the open sea where a 4:3 picture's edge would be.
 - In Piranha's Pursuit in a wide window, the hanging vines, logs and boulders no longer appear and vanish in the picture's sides as the course scrolls: they come in and go out past the window's edges.
