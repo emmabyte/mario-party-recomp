@@ -1,2 +1,3 @@
 - In Piranha's Pursuit in a wide window, the vine stands, hanging vines, logs and boulders no longer vanish in the left side of the picture as the course scrolls past them: they go out past the window's edge.
 - On a minigame's rules screen at a high resolution, the sky's clouds no longer have hard horizontal lines across them. The sky is a small picture drawn at twice its size a few rows at a time, and each strip was smoothed on its own; now the joins are smoothed across.
+- At a frame rate above the game's, the Chance Time "!" screen wipe no longer shows a ring of the board around its square as it opens, or its "!" larger than it should be for a frame: the "!" now keeps step with the black around it.
