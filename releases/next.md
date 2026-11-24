@@ -1,1 +1,2 @@
+- In Piranha's Pursuit, the dirt track and the grass and bushes behind the ferns now scroll smoothly at your display's frame rate, together with the trees and ferns. Before, they moved only 30 times a second while everything else moved every frame, so they jittered against the trees.
 - In Paddle Battle, the shafts of sunlight over the jungle now fade out softly at their sides and at both ends, and are a little wider. Before, each was a flat strip with hard straight edges that began and stopped abruptly in mid-air, which showed most in a wide window.
