@@ -719,6 +719,9 @@ void widescreen_skate_lava(omObjData* camera) {
             }
         }
     }
+    // The game sets the model's scale from its object's each frame.
+    camera->scale.x *= k;
+    camera->scale.z *= k;
     lava->unk_3C *= k;
     lava->unk_44 *= k;
 }
