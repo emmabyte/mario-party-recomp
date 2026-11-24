@@ -234,12 +234,12 @@ void widescreen_piranhas_trees(omObjData* object) {
 // camera's settled view looks down past the square's left and right sides at the top of a picture wider than 4:3, and its
 // opening turn round the stage past its edges, where the frame's clear showed black. Widening the floor would take the
 // sand ring out from under the players and the mushrooms with it, so it keeps its size, and a copy of it lies beside
-// each of its sides and corners, the grass going on at its own scale. Each copy is the floor mirrored across the edge it
-// shares with it (a corner's across both), so that where two meet the grass and its shading meet their own mirror image
-// and no edge shows. A side's copy, mirrored in one way only, is mirrored up and down as well (the floor is flat), or its
-// triangles would face away and the game would not draw them. They are a little lower than the floor, so that the game's own floor is the one drawn where they
-// overlap, and each copy's sand ring is over 2200 from the middle, past what the camera sees. us.toml's hook calls this
-// once the setup has made the floor; nothing moves them after. They take 8 of the game's 128 forms, of which the
+// each of its sides and corners, the grass going on at its own scale. Each copy is turned half round, so that a corner's
+// meets the floor as its mirror image across both edges and a side's meets it with the floor's opposite edge, whose
+// grass and shading are closer to its own than the edge a copy not turned would bring (a mirrored copy, with a scale
+// below 0, is not drawn). They are a little lower than the floor, so that the game's own floor is the one drawn where
+// they overlap, and each copy's sand ring is over 2200 from the middle, past what the camera sees. us.toml's hook calls
+// this once the setup has made the floor; nothing moves them after. They take 8 of the game's 128 forms, of which the
 // minigame uses 88.
 #define MUSHROOM_FLOOR_STEP 2874.0f
 #define MUSHROOM_FLOOR_BELOW 2.0f
@@ -262,7 +262,7 @@ void widescreen_musical_floor(omObjData* stage) {
             D_800F2B7C[copy].unk_24 = x * MUSHROOM_FLOOR_STEP;
             D_800F2B7C[copy].unk_28 = -MUSHROOM_FLOOR_BELOW;
             D_800F2B7C[copy].unk_2C = z * MUSHROOM_FLOOR_STEP;
-            D_800F2B7C[copy].unk_34 = 180.0f;
+            D_800F2B7C[copy].unk_34 = 180.0f; // its turn about the up axis, in degrees
         }
     }
 }
