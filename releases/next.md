@@ -1,2 +1,0 @@
-- In the Mini-Game House, the red exit door no longer slides out of its archway, with white showing beside it, as the camera turns from it to the Pot o' Skills or the Mini-Game table. The room now turns as one in the frames drawn between the game's own.
-- In Cast Aways in a wide window, the coins, coin bags and chests no longer pop in and out partway inside the left and right sides of the picture. They now float in from past the window's edges and out past them.
