@@ -227,6 +227,13 @@ func = "func_800FAEE8_PiranhasPursuit"
 before_vram = 0x800FB030
 text = "{ void widescreen_piranhas_trees(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_trees(rdram, ctx); }"
 
+# Musical Mushroom's floor carried on past its edges with copies of it (patches/widescreen.c, widescreen_musical_floor):
+# its stage object's setup, with the object in s3, once it has made the floor and is about to return.
+[[patches.hook]]
+func = "func_800F9D70_MusicalMushroom"
+before_vram = 0x800F9EDC
+text = "{ void widescreen_musical_floor(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r19; widescreen_musical_floor(rdram, ctx); *ctx = saved; }"
+
 # The seas and fields widened in x as they are made (patches/widescreen.c, widen_object and widen_model): each setup once
 # its stage is made, with its model's index in v0 or its object in s1. The game's registers are kept around the
 # call, which is made between two of its instructions.
