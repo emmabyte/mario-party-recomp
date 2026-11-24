@@ -50,11 +50,11 @@ RECOMP_PATCH void func_800F71AC_CastAways(omObjData* arg0) {
 
 f32 mp_aspect_ratio(void);
 
-// How far a side of the picture is past 4:3's, in 4:3's 320 wide.
+// How far a side of the picture is past 4:3's, in 4:3's 320 wide: 0 at 4:3, whose aspect in a float is a hair over.
 static f32 cast_aways_wider(void) {
     f32 wider = 120.0f * mp_aspect_ratio() - 160.0f;
 
-    return (wider > 0.0f) ? wider : 0.0f;
+    return (wider > 0.01f) ? wider : 0.0f;
 }
 
 // The screen x an item moving right is gone past (the game's 340).
