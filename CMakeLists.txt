@@ -138,6 +138,11 @@ target_compile_options(RecompiledFuncs PRIVATE
 # The microcode's vector unit (librecomp's rsp_vu_impl.hpp) uses SSE4.1 on x86-64, as the program does.
 if (CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     target_compile_options(RecompiledFuncs PRIVATE -march=nehalem)
+else()
+    # No fused multiply-adds where the CPU has them (arm64, a Mac's): the console rounds a multiply and an add each on
+    # its own, and online play needs every computer's game to compute the same floats as an x86-64 one does (which
+    # nehalem never fuses).
+    target_compile_options(RecompiledFuncs PRIVATE -ffp-contract=off)
 endif()
 # A call to an undeclared function links to a trap in WebAssembly, so it is an error there (N64Recomp-web's funcs.h
 # declares every function the recompiled code calls).
