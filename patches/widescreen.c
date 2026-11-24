@@ -229,6 +229,41 @@ void widescreen_piranhas_trees(omObjData* object) {
     }
 }
 
+// Musical Mushroom (overlay 0x0B)'s floor, the grass and the sand ring the players run round on, is one model, its
+// stage object's (file 0x1D0000, made in func_800F9D70_MusicalMushroom), a square about 2880 wide on the origin. The
+// camera's settled view looks down past the square's left and right sides at the top of a picture wider than 4:3, and its
+// opening turn round the stage past its edges, where the frame's clear showed black. Widening the floor would take the
+// sand ring out from under the players and the mushrooms with it, so it keeps its size, and a copy of it lies beside
+// each of its sides and corners, the grass going on at its own scale. They are a little closer together than the floor
+// is wide and a little lower, so that no gap shows between two and the game's own floor is the one drawn where they
+// overlap, and each copy's sand ring is over 2200 from the middle, past what the camera sees. us.toml's hook calls this
+// once the setup has made the floor; nothing moves them after. They take 8 of the game's 128 forms, of which the
+// minigame uses 88.
+#define MUSHROOM_FLOOR_STEP 2860.0f
+#define MUSHROOM_FLOOR_BELOW 2.0f
+
+void widescreen_musical_floor(omObjData* stage) {
+    s32 x;
+    s32 z;
+
+    for (x = -1; x <= 1; x++) {
+        for (z = -1; z <= 1; z++) {
+            s16 copy;
+
+            if (x == 0 && z == 0) {
+                continue;
+            }
+            copy = func_80023FC8(stage->model[0]);
+            if (copy < 0) {
+                continue;
+            }
+            D_800F2B7C[copy].unk_24 = x * MUSHROOM_FLOOR_STEP;
+            D_800F2B7C[copy].unk_28 = -MUSHROOM_FLOOR_BELOW;
+            D_800F2B7C[copy].unk_2C = z * MUSHROOM_FLOOR_STEP;
+        }
+    }
+}
+
 // The seas and fields of short_scenes that are widened in x as they are made, so that they reach a wide window's edges
 // (board_back_stage_widened, which moves the scene's widest out with them): a sea or a field with nothing standing at
 // its edges, which reads the same wider. A room's walls, a stage built for 4:3 and a painted backdrop keep their cap, and
