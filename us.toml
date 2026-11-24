@@ -259,6 +259,14 @@ func = "func_800FBC00_PaddleBattle"
 before_vram = 0x800FBE14
 text = "{ void paddle_battle_river_joined(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; paddle_battle_river_joined(rdram, ctx); *ctx = saved; }"
 
+# Paddle Battle's shafts of sunlight softened at their edges and ends (patches/paddle_battle.c, paddle_battle_shaft):
+# func_800FC39C_PaddleBattle, which makes each of the eight, once func_800174C0 has loaded its model (file 0x120007),
+# the model's index in v0. The game's registers are kept around the call, made between two of its instructions.
+[[patches.hook]]
+func = "func_800FC39C_PaddleBattle"
+before_vram = 0x800FC3CC
+text = "{ void paddle_battle_shaft(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r2; paddle_battle_shaft(rdram, ctx); *ctx = saved; }"
+
 # Board Movement and Map Scrolling (lib/mario-party-engine/src/board_options.cpp), Original by default.
 # Fast board movement: func_8004D6FC(player, speed) walks a player to the next space at a speed, 19.0 (0x41980000, in
 # a1) from all three of its callers (func_8005727C's walk, func_8005C834's and FirstMap's), at twice that, 38.0.
