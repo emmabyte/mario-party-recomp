@@ -262,15 +262,7 @@ void widescreen_musical_floor(omObjData* stage) {
             D_800F2B7C[copy].unk_24 = x * MUSHROOM_FLOOR_STEP;
             D_800F2B7C[copy].unk_28 = -MUSHROOM_FLOOR_BELOW;
             D_800F2B7C[copy].unk_2C = z * MUSHROOM_FLOOR_STEP;
-            if (x != 0) {
-                D_800F2B7C[copy].unk_3C = -D_800F2B7C[copy].unk_3C;
-            }
-            if (z != 0) {
-                D_800F2B7C[copy].unk_44 = -D_800F2B7C[copy].unk_44;
-            }
-            if ((x == 0) != (z == 0)) {
-                D_800F2B7C[copy].unk_40 = -D_800F2B7C[copy].unk_40;
-            }
+            D_800F2B7C[copy].unk_34 = 180.0f;
         }
     }
 }
