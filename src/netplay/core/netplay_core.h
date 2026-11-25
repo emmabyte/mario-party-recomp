@@ -101,6 +101,11 @@ namespace netplay {
         // Once a snapshot is taken up for players who rejoined (a bit for each port): the game gives each back to its
         // player, from the computer that played it while they were gone (Frame's left). Optional.
         void (*give_back)(uint8_t* rdram, uint8_t ports) = nullptr;
+        // While a frame has waited a while for the others (waiting true, called again every few milliseconds), and
+        // once it stops (false): a renderer that shows a picture only when the game draws a new one must keep showing
+        // the last, and what the player is shown over it (a question, a notice) must keep taking their input.
+        // Optional.
+        void (*hold_screen)(bool waiting) = nullptr;
         // Shows the players, or stops showing, that the session is putting the copies back in step after a desync,
         // as the game waits. Optional.
         void (*show_resync)(bool shown) = nullptr;

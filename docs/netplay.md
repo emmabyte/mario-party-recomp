@@ -130,7 +130,7 @@ game waits for them or once a computer plays for them: the host's hello says the
 game plays for itself until it has the host's party save (its own when that is the same), and every copy resyncs to
 that save at the same frame, the joining copy taking it up as a resumed party is (at the first frame its game could be
 saved at) and the player's character given back to them (Game's `give_back`). `NETPLAY_TEST_REJOIN` has the session
-test start player 2 again after it leaves; `MP_NETPLAY_TEST_LEFT_CHOICE=wait` leaves the host's question open. A host that leaves (its goodbye, or quiet for 15 seconds) ends its guests' sessions, and
+test start player 2 again after it leaves; `MP_NETPLAY_TEST_LEFT_CHOICE=wait` leaves the host's question open. While a frame waits for the others, RT64 would present nothing new (it presents when the screen changes), so the question and notices drawn over the game would neither show nor take input: the VI's divot bit, which RT64 doesn't draw by, changes at each VI meanwhile so that it presents the last picture again (`mario_party.cpp`'s hold_screen, Game's `hold_screen`). A joining copy holds its game at the first frame it could take the save up at until the save has come (`join_wait`), as the whole of a save is taken up only from the game's start. A host that leaves (its goodbye, or quiet for 15 seconds) ends its guests' sessions, and
 Resume Party picks the party up again. A session that ends for a reason (copies that differ, the host gone, a desync it
 can't resync) goes back to Online Play, which says why: the game can't be unloaded as it runs, so the program starts
 again in its launcher (src/netplay/restart.cpp, Game's `back_to_menu`). For the tests (`MP_NETPLAY_NO_MESSAGES`), it

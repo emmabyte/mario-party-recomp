@@ -848,7 +848,7 @@ Frame netplay::advance(uint8_t* rdram) {
         std::vector<uint8_t> bytes;
         Snapshot snap;
         PartySave head;
-        if (detail::join_now(bytes, back) && snapshot_from_bytes(bytes, snap, head)) {
+        if (detail::join_wait() && detail::join_now(bytes, back) && snapshot_from_bytes(bytes, snap, head)) {
             party_id = head.id;
             take_up(rdram, snap);
             if (back != 0 && game.give_back != nullptr) {

@@ -442,6 +442,7 @@ bool mp_netplay::fixed_aspect() {
 static bool can_snapshot(const uint8_t* rdram);
 static void before_take_up(uint8_t* rdram);
 static void give_back(uint8_t* rdram, uint8_t ports);
+static void hold_screen(bool waiting);
 static std::vector<uint8_t> extra_state();
 static void set_extra_state(const std::vector<uint8_t>& in);
 
@@ -461,6 +462,7 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
     game.can_snapshot = can_snapshot;
     game.before_take_up = before_take_up;
     game.give_back = give_back;
+    game.hold_screen = hold_screen;
     game.live_ranges = [](const uint8_t*, std::vector<netplay::Range>& out) {
         // What the hash leaves out (excluded): the system threads' and the runtime's, as real time passes.
         out.assign(std::begin(excluded), std::end(excluded));
@@ -849,6 +851,30 @@ static void give_back(uint8_t* rdram, uint8_t ports) {
         if (port < 4 && (ports & (1u << port)) != 0) {
             MEM_HU(6, player) = uint16_t(MEM_HU(6, player) & ~1u);
         }
+    }
+}
+
+// While a frame waits for the others (netplay::Game's hold_screen): RT64 presents only when the screen changes, so with
+// the game waiting it would show nothing new, and the menus drawn at each present (a question for the host, a notice)
+// would neither show nor take input. The VI's divot bit, which RT64 doesn't draw by and the game never sets
+// (osViSetSpecialFeatures), changes at each call instead, so each VI presents the last picture again; it is set back
+// on, as the game's VI mode has it, once the frame comes. Nothing of the game's own state changes.
+extern "C" void osViSetSpecialFeatures(uint32_t func);
+static void hold_screen(bool waiting) {
+    constexpr uint32_t DIVOT_ON = 0x0010, DIVOT_OFF = 0x0020;
+    static bool off = false;
+    if (waiting) {
+        static auto last = std::chrono::steady_clock::time_point{};
+        auto now = std::chrono::steady_clock::now();
+        if (now - last < std::chrono::milliseconds(15)) {
+            return;
+        }
+        last = now;
+        off = !off;
+        osViSetSpecialFeatures(off ? DIVOT_OFF : DIVOT_ON);
+    } else if (off) {
+        off = false;
+        osViSetSpecialFeatures(DIVOT_ON);
     }
 }
 

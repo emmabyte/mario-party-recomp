@@ -1466,7 +1466,7 @@ namespace {
     std::deque<std::pair<Clock::time_point, double>> wait_window; // the last second's waits
     void note_wait(double ms) {
         auto now = Clock::now();
-        if (ms > 1.0) {
+        if (ms > 1.0 && ms < 1000.0) { // a longer one waited for a player who left, not for the connection
             wait_window.emplace_back(now, ms);
         }
         while (!wait_window.empty() && now - wait_window.front().first > std::chrono::seconds(1)) {
@@ -2141,6 +2141,7 @@ Frame netplay::detail::session_frame(uint64_t hash) {
     }
     send_all();
     bool told = false;
+    bool held_screen = false;
     auto wait_start = Clock::now();
     auto sent_at = wait_start;
     while (!frame_ready()) {
@@ -2160,6 +2161,10 @@ Frame netplay::detail::session_frame(uint64_t hash) {
             check_left_choice();
             check_rejoins();
         }
+        if (game.hold_screen != nullptr && Clock::now() - wait_start > std::chrono::milliseconds(100)) {
+            game.hold_screen(true);
+            held_screen = true;
+        }
         if (hosting && silent > std::chrono::milliseconds(drop_ms)) {
             guest_gone(who, "stopped answering");
         } else if (!hosting && silent > std::chrono::milliseconds(timeout_ms)) {
@@ -2167,6 +2172,9 @@ Frame netplay::detail::session_frame(uint64_t hash) {
                 "scene: the host can pick it up with Resume Party.\n", sframe);
             end_session(3);
         }
+    }
+    if (held_screen) {
+        game.hold_screen(false);
     }
     note_wait(std::chrono::duration<double, std::milli>(Clock::now() - wait_start).count());
     if (hosting) {
@@ -2234,6 +2242,35 @@ bool netplay::detail::join_now(std::vector<uint8_t>& bytes, uint8_t& back) {
     say("[netplay] joined the party again: playing from frame %u\n", back_at);
     send_all();
     return true;
+}
+
+bool netplay::detail::join_wait() {
+    std::lock_guard<std::recursive_mutex> lock(session_mutex);
+    bool held = false;
+    auto asked = Clock::now();
+    while (joining_now && !(resyncing && resync_ready)) {
+        receive_packet(16);
+        if (Clock::now() - asked > std::chrono::milliseconds(150)) {
+            asked = Clock::now();
+            if (resyncing) {
+                send_resync_ack();
+            } else {
+                send_hello(remotes[0]);
+            }
+        }
+        if (Clock::now() - remotes[0].heard > std::chrono::milliseconds(timeout_ms)) {
+            say("[netplay] the host stopped answering\n");
+            end_session(3);
+        }
+        if (game.hold_screen != nullptr) {
+            game.hold_screen(true);
+            held = true;
+        }
+    }
+    if (held) {
+        game.hold_screen(false);
+    }
+    return joining_now;
 }
 
 bool netplay::detail::joining() {

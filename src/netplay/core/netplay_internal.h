@@ -86,4 +86,7 @@ namespace netplay::detail {
     // On a joining copy that has the save: its bytes, the ports given back, and the session at the frame after the
     // one the others take it up after. False while it hasn't.
     bool join_now(std::vector<uint8_t>& bytes, uint8_t& back);
+    // On a joining copy whose game could take the save up: waits for the save, as the game would go on past where it
+    // can (a resumed party is taken up from the game's start, and only from there).
+    bool join_wait();
 }
