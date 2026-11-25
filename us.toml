@@ -206,6 +206,19 @@ text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_huge_form_f
 
 # A minigame's instructions screen past 4:3 (patches/instructions.c says how): after its setup has placed and scaled
 # each of the two strips of cloud along the bottom (form 0xB000A, then 0xB000B, each in s0), a copy of it on each side.
+# A minigame's instructions screen's soft cloud behind its title (form file 0xB0004) fades out before its triangles'
+# flat bottom edges (src/game/model_tiles.cpp says why): its setup makes it in LoadFormFile(0xB0004, 0x289), from the
+# jal (which L_800F6F28 reaches either way) to the instruction after its delay slot.
+[[patches.hook]]
+func = "func_800F6B14_MinigameInstructions"
+before_vram = 0x800F6F2C
+text = "{ void mp_model_title_cloud(uint8_t*, int32_t); mp_model_title_cloud(rdram, 1); }"
+
+[[patches.hook]]
+func = "func_800F6B14_MinigameInstructions"
+before_vram = 0x800F6F34
+text = "{ void mp_model_title_cloud(uint8_t*, int32_t); mp_model_title_cloud(rdram, 0); }"
+
 [[patches.hook]]
 func = "func_800F6B14_MinigameInstructions"
 before_vram = 0x800F6DFC
