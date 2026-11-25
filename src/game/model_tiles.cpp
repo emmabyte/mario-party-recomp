@@ -27,9 +27,9 @@
 // the SPREAD texels either side of it, 2 SPREAD + 1 even steps where there was one, each texel's new colour from its
 // own palette (a CI8 texture with an RGBA16 one). Two quarters' palettes may have nothing between their colours (one
 // sky, the other ground), so a colour a palette lacks takes a slot no texture of the part drawn with it uses, or, with
-// none free, one of the palette's two nearest colours, every texel of it moved to the other, if they are nearer each
-// other than the colour wanted is to any, or no more than a step apart in each channel: texels here and there a step off
-// show far less than a line across flat sky. The filter's hard step across the join is gone.
+// none free, one of the palette's two nearest colours (never one a join made), every texel of it moved to the other, if
+// they are nearer each other than the colour wanted is to any, or no more than a step apart in each channel: texels
+// here and there a step off show far less than a line across flat sky. The filter's hard step across the join is gone.
 
 #include "recomp.h"
 #include "librecomp/helpers.hpp"
@@ -199,7 +199,6 @@ namespace {
 
     // The index in p's palette for a colour (5 bits a channel) with alpha bit alpha: the nearest colour the texture
     // draws with, or, if that is more than a step off in a channel, a slot given the colour itself (below).
-    int32_t diag_miss = 0, diag_miss_d = 0, diag_null = 0, diag_pair_d = 0;
     int32_t colour_index(uint8_t* rdram, const Picture& p, const Picture& also, int32_t r, int32_t g, int32_t b,
                          uint32_t alpha) {
         Slots* s = slots_for(rdram, p, also);
@@ -218,7 +217,7 @@ namespace {
             }
         }
         if (s == nullptr || (best >= 0 && best_d <= 1)) {
-            if (best_d > 1) { diag_null++; } return best;
+            return best;
         }
         int32_t slot = -1;
         for (int32_t i = 0; i <= s->top && slot < 0; i++) {
@@ -252,7 +251,7 @@ namespace {
                 }
             }
             if (keep < 0 || (best >= 0 && pair_d >= best_d && pair_d > 3)) {
-                diag_miss++; diag_miss_d += best_d; diag_pair_d += pair_d; return best;
+                return best;
             }
             remap(rdram, p, also, drop, keep);
             if (best == drop) {
@@ -316,7 +315,6 @@ namespace {
         int32_t length = std::min(across ? a.height : a.width, across ? b.height : b.width);
         int32_t from = std::max(low >> 5, 0), to = std::min((high + 31) >> 5, length);
         int32_t depth = std::min({ SPREAD, (across ? a.width : a.height) / 2, (across ? b.width : b.height) / 2 });
-        int32_t changed = 0, step0 = 0, step1 = 0;
         for (int32_t x = from; x < to; x++) {
             // Texel j in from the join on either side (0 at it), a byte offset in its texture.
             auto at_a = [&](int32_t j) { return across ? x * a.width + a.width - 1 - j : (a.height - 1 - j) * a.width + x; };
@@ -329,7 +327,6 @@ namespace {
             int32_t ar, ag, ab, br, bg, bb;
             rgba16_split(MEM_HU(ia[0] * 2, a.palette), ar, ag, ab);
             rgba16_split(MEM_HU(ib[0] * 2, b.palette), br, bg, bb);
-            step0 += distance(ar, ag, ab, br, bg, bb);
             // The step across the join spread over the texels either side: the one at it moves depth / (2 depth + 1)
             // of the step toward the other side, the next one less, so the colours climb in 2 depth + 1 even steps.
             float dr = (float)(br - ar), dg = (float)(bg - ag), db = (float)(bb - ab);
@@ -347,24 +344,8 @@ namespace {
                 if (nb >= 0) {
                     MEM_B(at_b(j), b.texture) = (int8_t)nb;
                 }
-                changed += ((uint32_t)na != ia[j]) + ((uint32_t)nb != ib[j]);
-            }
-            rgba16_split(MEM_HU(MEM_BU(at_a(0), a.texture) * 2, a.palette), ar, ag, ab);
-            rgba16_split(MEM_HU(MEM_BU(at_b(0), b.texture) * 2, b.palette), br, bg, bb);
-            step1 += distance(ar, ag, ab, br, bg, bb);
-        }
-        int32_t free_a = 0, free_b = 0;
-        for (int i = 0; i < slots_count; i++) {
-            for (int k = 0; k < 256; k++) {
-                if (!slots[i].used[k]) {
-                    free_a += slots[i].palette == a.palette;
-                    free_b += slots[i].palette == b.palette;
-                }
             }
         }
-        printf("SEAMDIAG join %08X/%08X onto %08X/%08X across %d span %d..%d texels %d..%d changed %d step %d -> %d free %d %d miss %d d %d pair %d null %d\n",
-               (uint32_t)a.texture, (uint32_t)a.palette, (uint32_t)b.texture, (uint32_t)b.palette, across, low, high, from, to, changed, step0, step1, free_a, free_b, diag_miss, diag_miss_d, diag_pair_d, diag_null); diag_miss = diag_miss_d = diag_null = diag_pair_d = 0;
-        fflush(stdout);
     }
 
     // A batch's commands read for its CI8 texture: the palette it loads, its TLUT's format and its render tile.
@@ -457,7 +438,6 @@ extern "C" void mp_model_batch_end(uint8_t* rdram) {
         if (picture.texture != 0 && in_rdram(picture.texture, picture.width * picture.height) &&
             in_rdram(picture.palette, 512) && last > first && piece_count < MAX_PIECES) {
             Piece piece{ picture, first, last };
-            printf("SEAMDIAG piece colours %d %08X pal %08X %dx%d verts %d..%d vs %08X n %d\n", picture.colours, (uint32_t)picture.texture, (uint32_t)picture.palette, picture.width, picture.height, first, last, (uint32_t)vs, piece_count);
             for (int i = 0; i < piece_count; i++) {
                 if (pieces[i].picture.texture != piece.picture.texture) {
                     join(rdram, vs, piece, pieces[i], false);
