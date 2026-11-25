@@ -28,6 +28,13 @@ if (APPLE)
     enable_language(OBJC OBJCXX)
 endif()
 
+# No fused multiply-adds anywhere in the program where the CPU has them (arm64, a Mac's), not only in the recompiled
+# game (below): online play needs every computer to compute the same floats as an x86-64 one, which never fuses.
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64" OR CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffp-contract=off")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffp-contract=off")
+endif()
+
 if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.24.0")
     cmake_policy(SET CMP0135 NEW)
 endif()
@@ -138,6 +145,13 @@ target_compile_options(RecompiledFuncs PRIVATE
 # The microcode's vector unit (librecomp's rsp_vu_impl.hpp) uses SSE4.1 on x86-64, as the program does.
 if (CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     target_compile_options(RecompiledFuncs PRIVATE -march=nehalem)
+else()
+    # No fused multiply-adds where the CPU has them (arm64, a Mac's): the console rounds a multiply and an add each on
+    # its own, and online play needs every computer's game to compute the same floats as an x86-64 one does (which
+    # nehalem never fuses).
+    target_compile_options(RecompiledFuncs PRIVATE -ffp-contract=off)
+    # The microcode's vector unit's SSE, on NEON.
+    target_include_directories(RecompiledFuncs PRIVATE ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/thirdparty/sse2neon)
 endif()
 # A call to an undeclared function links to a trap in WebAssembly, so it is an error there (N64Recomp-web's funcs.h
 # declares every function the recompiled code calls).
@@ -239,6 +253,35 @@ target_sources(MarioPartyRecompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/src/game/recomp_api.cpp
     ${CMAKE_SOURCE_DIR}/src/game/survey.cpp
 )
+
+# Netplay (docs/netplay.md): its game-agnostic core (src/netplay/core) and Mario Party's side of it. Off, the hooks
+# us.toml has in the game answer as they do when no session runs, and nothing of netplay is built. The web build has
+# no UDP for a session, but records and replays.
+option(MP_NETPLAY "Build netplay (record, replay, lockstep sessions)" ON)
+if (MP_NETPLAY)
+    target_sources(MarioPartyRecompiled PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/netplay/core/netplay_core.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/core/session.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/core/udp.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/mario_party.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/online_tab.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/online_screens.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/restart.cpp
+    )
+    # zstd, which RT64 builds, compresses the party save a resync sends a copy that hasn't it (core/session.cpp).
+    target_link_libraries(MarioPartyRecompiled PRIVATE libzstd_static)
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/src/netplay/core/session.cpp PROPERTIES
+        INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/zstd/lib)
+    # The build's commit, for the session's handshake: two copies of different commits may play differently.
+    execute_process(COMMAND git rev-parse --short=12 HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE MP_BUILD_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if (MP_BUILD_COMMIT)
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/src/netplay/mario_party.cpp PROPERTIES
+            COMPILE_DEFINITIONS "MP_BUILD_COMMIT=\"${MP_BUILD_COMMIT}\"")
+    endif()
+else()
+    target_sources(MarioPartyRecompiled PRIVATE ${CMAKE_SOURCE_DIR}/src/netplay/off.cpp)
+endif()
 if (MP_PATCHES)
     target_sources(MarioPartyRecompiled PRIVATE ${CMAKE_SOURCE_DIR}/src/main/register_patches.cpp)
     # register_patches.cpp includes the patches' section table, which the command above writes in the middle of a
@@ -293,6 +336,9 @@ if (MSVC)
 endif()
 
 if (WIN32)
+    # Netplay's sessions' sockets (src/netplay/core/udp.cpp).
+    target_link_libraries(MarioPartyRecompiled PRIVATE ws2_32)
+
     include(FetchContent)
 
     if (DEFINED ENV{SDL2_VERSION})

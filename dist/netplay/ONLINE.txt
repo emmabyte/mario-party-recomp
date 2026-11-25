@@ -1,0 +1,55 @@
+Playing Mario Party online (alpha)
+==================================
+
+Two to four players, each on their own computer with this same release, their own Mario Party (USA) ROM, the same
+mods enabled and the same Board Movement and Map Scrolling settings. One player hosts; the others join.
+
+1. Everyone: start MarioPartyRecompiled and pick your ROM with Load ROM the first time.
+2. Everyone: choose Online Play in the launcher and type your name.
+3. The host: choose Host a Party. Your party opens, with the address to give the others.
+4. Each other player: choose Join a Party, type the host's address and choose Connect!. The host gives each player
+   their number in the order they join.
+5. Everyone chooses Ready? when they're set. Once all are ready, the host chooses Let's Party! and the game begins on
+   every computer. Characters and the party's rules are chosen in the game as usual. Each player plays with their own
+   first controller (or the keyboard). Leave leaves the party.
+
+The host's address
+------------------
+The others must be able to reach UDP port 7845 on the host's computer:
+
+- Easiest: everyone joins the same VPN (Radmin VPN, Tailscale or ZeroTier) and the host gives the address the VPN
+  shows (the party lists this computer's addresses too).
+- Over the internet without a VPN: forward UDP port 7845 on the host's router to the host's computer, and give the
+  others the host's public address (a site such as whatismyip.com shows it).
+- On the same home network: the host's local address (like 192.168.1.20).
+
+Allow the program through the firewall if your computer asks.
+
+What to expect
+--------------
+- Everyone plays from the host's save. A guest's own save isn't changed: its session saves to saves/netplay instead.
+- The game measures the connection as you play and delays everyone's buttons just enough to cover it, so everyone
+  sees the same game: a tenth of a second or so on a VPN. If the connection gets worse the delay goes up at once, and
+  it comes back down slowly once things are steady again.
+- If a guest leaves (closes the game, or their connection is lost for 5 seconds), everyone waits and the host
+  chooses: Computer plays (a computer player takes their place and everyone plays on) or Back to lobby (everyone goes
+  back to the party screen, and the host's party resumes where its last scene started).
+- A player who left can join again: start the game, choose Join a Party with the host's address and Connect!. This
+  works while everyone is waiting and after a computer has taken over. Everyone goes back to the start of the current
+  scene together, and the player takes their character back.
+- If the host leaves, the party ends for everyone and each game goes back to Online Play, saying why; Resume Party
+  brings it back.
+- If the games ever play differently ("desynced"), they put themselves back in step on their own: everyone sees a
+  "Resyncing" notice and goes back to the start of the current scene. That is a bug: each copy keeps a record of the
+  session in its netplay/sessions folder. Please send the newest folder from every player.
+
+If a session ends early
+-----------------------
+Every computer saves the party at the start of each scene. The host chooses Resume Party (in Online Play), the same
+players join again in any order, and the party picks up where its last scene started, each player as the player they
+were. Only the players of that party can resume it.
+
+This is an alpha: a resync or a player joining again goes back to the start of the current scene, and the host's port
+must be reachable.
+
+host.bat / host.sh and join.bat / join.sh start a session from the command line instead, for testing.

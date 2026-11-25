@@ -18,6 +18,8 @@
 #include "ultramodern/ultra64.h"
 #include "ultramodern/ultramodern.hpp"
 
+#include "../netplay/netplay.h"
+
 #define SDL_MAIN_HANDLED
 #ifdef _WIN32
 #include "SDL.h"
@@ -61,7 +63,7 @@
 #include "window_icon_bmp.h"
 #endif
 
-const std::string version_string = "0.2.14";
+const std::string version_string = "0.2.14-netplay-alpha.14";
 
 template<typename... Ts>
 void exit_error(const char* str, Ts ...args) {
@@ -97,10 +99,15 @@ ultramodern::gfx_callbacks_t::gfx_data_t create_gfx() {
 // in each port a pad is plugged into: the game offers players for those ports alone. Each has a Rumble Pak in it, which
 // the game starts with osMotorInit and shakes with __osMotorAccess (the runtime's, to that port's pad): with no pak the
 // runtime's osMotorInit answers PFS_ERR_NOPACK and the game never rumbles.
+// During a netplay replay the ports are the recording's (src/netplay/core), which notes the ports this answers.
 ultramodern::input::connected_device_info_t get_connected_device_info(int controller_num) {
     bool unassigned = recompinput::players::get_number_of_assigned_players() == 0;
-    if ((unassigned && (controller_num == 0 || (size_t)controller_num < recompinput::get_detected_controller_count())) ||
-        recompinput::players::get_player_is_assigned(controller_num)) {
+    bool connected = (unassigned && (controller_num == 0 || (size_t)controller_num < recompinput::get_detected_controller_count())) ||
+        recompinput::players::get_player_is_assigned(controller_num);
+    if (!netplay::connected_override(controller_num, &connected)) {
+        netplay::note_connected(controller_num, connected);
+    }
+    if (connected) {
         return ultramodern::input::connected_device_info_t{
             .connected_device = ultramodern::input::Device::Controller,
             .connected_pak = ultramodern::input::Pak::RumblePak,
@@ -236,6 +243,47 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
     uint32_t num_bytes_to_queue = audio_convert.len_cvt - output_channels * discarded_output_frames * sizeof(swap_buffer[0]);
     float* samples_to_queue = swap_buffer.data() + output_channels * discarded_output_frames / 2;
 
+#ifndef __EMSCRIPTEN__
+    // Online, the game makes its sound as its frames come, which a stall for a late player holds up and the frames
+    // after it make up at once. So the sound keeps a cushion of 120 ms, played back to within half a percent faster or
+    // slower to stay there (no one hears the pitch move), and after a stall long enough to empty it, it waits until it
+    // is full again rather than playing it in crackles: a gap once, not over and over.
+    if (mp_netplay::active()) {
+        constexpr double target_ms = 120.0;
+        static bool refilling = true;
+        static std::vector<float> stretched;
+        double queued_ms = cur_queued_microseconds / 1000.0;
+        if (queued_ms > 4 * target_ms) {
+            return; // far behind (a long stall's frames made up): this buffer would only add delay
+        }
+        if (queued_ms < 10.0 && !refilling) {
+            refilling = true;
+            mp_netplay::note_sound_gap();
+            SDL_PauseAudioDevice(audio_device, 1);
+        }
+        size_t in_frames = num_bytes_to_queue / (output_channels * sizeof(float));
+        double ratio = 1.0 + std::clamp((queued_ms - target_ms) / target_ms, -1.0, 1.0) * 0.005;
+        size_t out_frames = size_t(double(in_frames) / ratio);
+        stretched.resize(out_frames * output_channels);
+        for (size_t i = 0; i < out_frames; i++) {
+            double at = double(i) * double(in_frames - 1) / double(std::max<size_t>(out_frames - 1, 1));
+            size_t a = size_t(at);
+            size_t b = std::min(a + 1, in_frames - 1);
+            float t = float(at - double(a));
+            for (uint32_t c = 0; c < output_channels; c++) {
+                stretched[i * output_channels + c] = samples_to_queue[a * output_channels + c] * (1.0f - t) +
+                    samples_to_queue[b * output_channels + c] * t;
+            }
+        }
+        queue_audio(stretched.data(), uint32_t(stretched.size() * sizeof(float)));
+        if (refilling && get_queued_audio_bytes() / (output_channels * sizeof(float)) * 1000 / output_sample_rate >= target_ms) {
+            refilling = false;
+            SDL_PauseAudioDevice(audio_device, 0);
+        }
+        return;
+    }
+#endif
+
     // With more than 100 ms queued (the window was dragged, a slow boot), drop samples to catch up, whole frames only:
     // SDL's queue is a byte stream, so a part of one would put every sample queued after it out of step, read as noise.
     uint32_t skip_factor = cur_queued_microseconds / 100000;
@@ -327,6 +375,13 @@ RspUcodeFunc* get_rsp_microcode(const OSTask* task) {
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 gpr get_entrypoint_address();
 
+// The game's entry, after the runtime has read the save and before the game reads it: an online session's handshake
+// first, which waits for every player and gives a guest the host's save (src/netplay).
+static void game_entrypoint(uint8_t* rdram, recomp_context* ctx) {
+    mp_netplay::start();
+    recomp_entrypoint(rdram, ctx);
+}
+
 std::vector<recomp::GameEntry> supported_games = {
     {
         // XXH3 of Mario Party (USA), SHA-1 1159bd56730094bfc71be30113e1cfc8bacf34f3. Its code is stored uncompressed.
@@ -340,7 +395,7 @@ std::vector<recomp::GameEntry> supported_games = {
         .thumbnail_bytes = std::span<const char>(icon_bytes),
         .is_enabled = true,
         .entrypoint_address = get_entrypoint_address(),
-        .entrypoint = recomp_entrypoint,
+        .entrypoint = game_entrypoint,
     },
 };
 
@@ -399,7 +454,37 @@ static std::string game_thread_name(const OSThread* t) {
 // needs nobody at the window. Needs the ROM already stored.
 static bool autoboot = false;
 
+// Online Play's screens (src/netplay/online_screens.cpp), where a party is hosted or joined and starts the game once
+// everyone is ready.
+static void open_online_play() {
+    const recomp::GameEntry& game = supported_games[0];
+    recompui::update_game_mod_id(game.mod_game_id);
+    std::u8string game_id = game.game_id;
+    mp_netplay::open_online([game_id]() {
+        if (!recomp::is_rom_valid(game_id)) {
+            recompui::open_info_prompt("Online Play", "Load your Mario Party ROM first, with Load ROM in the "
+                "launcher.", "OK", []() {}, recompui::ButtonStyle::Primary);
+            return false;
+        }
+        return true;
+    }, [game_id]() {
+        recomp::start_game(game_id, {});
+        recompui::hide_all_contexts();
+    });
+}
+
+// Back from a party that ended (src/netplay/restart.cpp started the program again): Online Play on the launcher's
+// first frame, saying why, and the lobby again when the host took everyone back to it.
+static bool returning_online = false;
+static std::string return_reason;
+static std::string return_lobby;
+
 void on_launcher_update(recompui::LauncherMenu*) {
+    if (returning_online) {
+        returning_online = false;
+        open_online_play();
+        mp_netplay::online_returned(return_reason, return_lobby);
+    }
     static bool done = false;
     if (!autoboot || done) {
         return;
@@ -417,7 +502,18 @@ void on_launcher_update(recompui::LauncherMenu*) {
 void on_launcher_init(recompui::LauncherMenu* menu) {
     const recomp::GameEntry& game = supported_games[0];
     auto game_options_menu = menu->init_game_options_menu(game.game_id, game.mod_game_id, game.display_name, game.thumbnail_bytes);
-    game_options_menu->add_default_options();
+    // RecompFrontend's options, with Online Play after Start Game: its screens, where a party is hosted or joined and
+    // starts the game once everyone is ready (src/netplay/online_screens.cpp).
+    game_options_menu->add_start_game_or_load_rom_option();
+    if (mp_netplay::available()) {
+        game_options_menu->add_option("Online Play", open_online_play);
+    }
+    game_options_menu->add_setup_controls_option();
+    game_options_menu->add_settings_option();
+#ifndef __EMSCRIPTEN__
+    game_options_menu->add_mods_option();
+    game_options_menu->add_exit_option();
+#endif
 }
 
 void enable_texture_pack(recomp::mods::ModContext& context, const recomp::mods::ModHandle& mod) {
@@ -561,6 +657,9 @@ int main(int argc, char** argv) {
         .get_connected_device_info = get_connected_device_info,
     };
 
+    mp_netplay::init(input_callbacks, version_string);
+    returning_online = mp_netplay::available() && mp_netplay::returning(return_reason, return_lobby);
+
     ultramodern::events::callbacks_t thread_callbacks{
         .vi_callback = recompinput::update_rumble,
         .gfx_init_callback = nullptr,
@@ -593,6 +692,7 @@ int main(int argc, char** argv) {
     cfg.error_handling_callbacks = error_handling_callbacks;
     cfg.threads_callbacks = { .get_game_thread_name = game_thread_name };
     recomp::start(cfg);
+    mp_netplay::leave();
 
 #ifndef __EMSCRIPTEN__
     NFD_Quit();

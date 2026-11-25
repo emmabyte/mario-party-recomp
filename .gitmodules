@@ -15,4 +15,5 @@
 	url = https://github.com/n64hub/N64Recomp-browser
 [submodule "lib/mario-party-engine"]
 	path = lib/mario-party-engine
-	url = https://github.com/n64hub/mario-party-engine
+	url = https://github.com/emmabyte/mario-party-engine
+	branch = prc-end

@@ -23,6 +23,134 @@ renamed = [
     "PlaySound",
 ]
 
+# Netplay (src/netplay/mario_party.cpp says how). During a session:
+# - the controller thread's read of the pads at each VI goes to netplay's own queue instead of the game's ring, and once
+#   a frame, as the game starts reading its ring, netplay fills it with the frame's inputs;
+# - the VI count the game keeps (D_800F383C) counts two a frame from the frame netplay is on, as the game's logic
+#   reads it, while the two places that pace the game by it (the main loop's wait for two VIs, the swap chain's)
+#   read the VIs that really passed; the count of frames drawn (D_800F3758) is the frame netplay is on;
+# - the copies of Mario Party 4's frandom in five overlays, which seed themselves from the CPU's count register,
+#   read a count from the frame netplay is on;
+# - a process that waits on the SI manager's thread (RequestSIFunction's type 2: the EEPROM, the Rumble Pak) waits
+#   for it there and then, where the game would sleep a frame at a time until the answer came, as many as real time
+#   took;
+# - the sound driver's thread gets its retraces from netplay, as many at the start of each frame as the frame before
+#   took in real time (2 to 4), which it makes the sound of before the frame goes on (the scheduler starting each sound
+#   task at once rather than at the next VI), rather than from the VI handler, and makes as many samples at each as a console
+#   playing in time would, rather than as many as the sound still queued on this computer asks for;
+# - a board's background loader finishes each piece the board sends it before the board goes on.
+# With no session each hook returns at once, or hands back the value it was given.
+[[patches.hook]]
+func = "func_80013974"
+before_vram = 0x80013974
+text = "{ int mp_netplay_si_read(uint8_t*); if (mp_netplay_si_read(rdram)) { ctx->r2 = 0; return; } }"
+
+[[patches.hook]]
+func = "func_80013E84"
+before_vram = 0x80013E84
+text = "{ void mp_netplay_pad_frame(uint8_t*, recomp_context*); mp_netplay_pad_frame(rdram, ctx); }"
+
+# The scheduler's sound thread (func_80063C38, src/engine/nnsched.c), which waits for a VI and then takes a sound task
+# if one is waiting, so that a task waits for the next VI: during a session it waits for the task itself instead and
+# starts it at once (to after_3, the call's end, with the task taken), as netplay steps the sound driver several times a
+# frame and each step waits for its task (mp_netplay_audio_direct).
+[[patches.hook]]
+func = "func_80063C38"
+before_vram = 0x80063C78
+text = "{ int mp_netplay_audio_direct(uint8_t*, recomp_context*); if (mp_netplay_audio_direct(rdram, ctx)) goto after_3; }"
+
+# The VI handler's D_800F383C += 1 (src/engine/nnsched.c): during a session, the count it stores is netplay's.
+[[patches.hook]]
+func = "func_80063B34"
+before_vram = 0x80063B94
+text = "{ gpr mp_netplay_vi_tick(uint8_t*, gpr); ctx->r2 = mp_netplay_vi_tick(rdram, ctx->r2); }"
+
+# The main loop's wait for two VIs between frames (its s3), and the swap chain's (src/engine/graphics.c): the VIs that
+# really passed.
+[[patches.hook]]
+func = "func_8003B330"
+before_vram = 0x8003B4FC
+text = "{ gpr mp_netplay_real_vi(uint8_t*, gpr); ctx->r3 = mp_netplay_real_vi(rdram, ctx->r3); }"
+
+[[patches.hook]]
+func = "func_8001A7DC"
+before_vram = 0x8001A84C
+text = "{ gpr mp_netplay_real_vi(uint8_t*, gpr); ctx->r4 = mp_netplay_real_vi(rdram, ctx->r4); }"
+
+[[patches.hook]]
+func = "func_800FBC58_BoxMountainMayhem"
+before_vram = 0x800FBC80
+text = "{ gpr mp_netplay_count(uint8_t*, gpr); ctx->r2 = mp_netplay_count(rdram, ctx->r2); }"
+
+[[patches.hook]]
+func = "func_800F9F18_GroundPound"
+before_vram = 0x800F9F40
+text = "{ gpr mp_netplay_count(uint8_t*, gpr); ctx->r2 = mp_netplay_count(rdram, ctx->r2); }"
+
+[[patches.hook]]
+func = "func_800FC9D8_MarioBandstand"
+before_vram = 0x800FCA00
+text = "{ gpr mp_netplay_count(uint8_t*, gpr); ctx->r2 = mp_netplay_count(rdram, ctx->r2); }"
+
+[[patches.hook]]
+func = "func_800F8E18_UnusedMinigame1"
+before_vram = 0x800F8E40
+text = "{ gpr mp_netplay_count(uint8_t*, gpr); ctx->r2 = mp_netplay_count(rdram, ctx->r2); }"
+
+[[patches.hook]]
+func = "func_800FD1D8_StaffScene"
+before_vram = 0x800FD200
+text = "{ gpr mp_netplay_count(uint8_t*, gpr); ctx->r2 = mp_netplay_count(rdram, ctx->r2); }"
+
+# RequestSIFunction's wait (src/engine/siman.c), after its first look at its queue: during a session, if the SI
+# manager has not answered yet, waits for it rather than sleeping a frame and looking again.
+[[patches.hook]]
+func = "RequestSIFunction"
+before_vram = 0x8006439C
+text = "{ int mp_netplay_si_wait(void); if (ctx->r2 != 0 && mp_netplay_si_wait()) { ctx->r4 = ADD32(ctx->r29, 0x10); ctx->r5 = 0; ctx->r6 = 1; osRecvMesg_recomp(rdram, ctx); } }"
+
+# The VI handler's send to each client (func_80063AD8, src/engine/nnsched.c): during a session, not the retrace to the
+# sound driver's thread. Its thread (func_800130E8): at the top of its loop, and once it has taken a message.
+[[patches.hook]]
+func = "func_80063AD8"
+before_vram = 0x80063B08
+text = "{ int mp_netplay_vi_client(uint8_t*, gpr, gpr); if (mp_netplay_vi_client(rdram, MEM_W(0, ctx->r16 + 4), ctx->r17)) goto L_80063B14; }"
+
+[[patches.hook]]
+func = "func_800130E8"
+before_vram = 0x80013130
+text = "{ void mp_netplay_audio_wait(uint8_t*); mp_netplay_audio_wait(rdram); }"
+
+[[patches.hook]]
+func = "func_800130E8"
+before_vram = 0x80013144
+text = "{ void mp_netplay_audio_got(uint8_t*, gpr); mp_netplay_audio_got(rdram, MEM_W(0, ctx->r29 + 0x10)); }"
+
+# The sound driver's start of a tune (func_8000B844, src/B980.c), as it gives the music player the tune's bank: during
+# a session the frame's retraces go on until the player has taken it.
+[[patches.hook]]
+func = "func_8000B844"
+before_vram = 0x8000BA44
+text = "{ void mp_netplay_tune_bank(gpr); mp_netplay_tune_bank(MEM_W(0x4, ctx->r2)); }"
+
+# The sound driver's thread's count of the sound still to play (func_80013234, after osAiGetLength): during a session,
+# a count from the frame, so each retrace makes the same number of samples on every computer.
+[[patches.hook]]
+func = "func_80013234"
+before_vram = 0x80013280
+text = "{ gpr mp_netplay_ai_length(uint8_t*, gpr); ctx->r2 = mp_netplay_ai_length(rdram, ctx->r2); }"
+
+# A board's background loader (func_8004A890, src/48D90.c): during a session, each piece it sends is waited for.
+[[patches.hook]]
+func = "func_8004A890"
+before_vram = 0x8004A930
+text = "{ void mp_netplay_loader_send(gpr); mp_netplay_loader_send(ctx->r5); }"
+
+[[patches.hook]]
+func = "func_8004A890"
+before_vram = 0x8004A938
+text = "{ void mp_netplay_loader_sent(uint8_t*, recomp_context*); mp_netplay_loader_sent(rdram, ctx); }"
+
 # The survey (patches/survey.c): the overlay a script asked for, in place of the one the game goes to.
 [[patches.hook]]
 func = "omOvlGotoEx"

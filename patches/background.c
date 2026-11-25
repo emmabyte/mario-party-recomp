@@ -92,7 +92,8 @@ u16 func_8004A814(s32 arg0, s32 arg1);
 u32 func_8004A844(u16 arg0);
 u8* func_8004A868(u16 arg0);
 void func_80023728(void*);
-f32 mp_aspect_ratio(void);
+// The picture's shape the game plays by (src/game/recomp_api.cpp): 16:9 during netplay, whatever the window.
+f32 mp_play_aspect_ratio(void);
 
 // The slots past the game's 40, and their tiles.
 static unk20 extra_slots[SLOTS - GAME_SLOTS];
@@ -250,7 +251,7 @@ RECOMP_PATCH unk20* func_8004A890(u16 arg0) {
 // The picture's half-width, in the 320x240 screen's pixels, that the camera keeps on the map: 160 at 4:3, more in a
 // wider window, as far as the map has room for.
 static f32 camera_half_width(void) {
-    f32 half = 120.0f * mp_aspect_ratio();
+    f32 half = 120.0f * mp_play_aspect_ratio();
 
     if (half > D_800D6736) {
         half = D_800D6736;
