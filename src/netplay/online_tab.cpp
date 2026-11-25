@@ -5,7 +5,8 @@
 //
 // A guest needs only the host's address: the host gives each guest its player, in the order they join. The host's UDP
 // port must be reachable from the guests (forwarded on its router, or over a VPN such as Tailscale, ZeroTier or
-// Radmin).
+// Radmin). Or everyone joins a netplay server (src/netplay/server), and only the server's port need be reachable: it
+// keeps the server's address and password too, and whether the last party was on a server.
 
 #include <string>
 
@@ -30,6 +31,10 @@ void mp_netplay::add_settings_tab() {
         "7845"
     );
     online.add_string_option("address", "Host's Address", "The address last joined.", "", true);
+    online.add_string_option("server", "Server's Address", "The netplay server last played on.", "", true);
+    online.add_string_option("server_password", "Server's Password", "The password last given to it.", "", true);
+    online.add_string_option("server_token", "Server Token", "This copy's own number on servers.", "", true);
+    online.add_string_option("via", "Last Joined Through", "direct or server: where Back to lobby goes again.", "", true);
     mp_netplay::set_online_config(&online);
 }
 

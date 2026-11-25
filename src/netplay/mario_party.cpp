@@ -523,10 +523,13 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
             }
             asking = true;
             std::string header = std::string(name) + " left the party";
+            // Through a server they join it again; otherwise this copy's address.
+            const char* how = netplay::via_server() ? "(Play on a Server, the same server)"
+                                                       : "(Join a Party, with your address)";
             recompui::open_choice_prompt(header,
-                "Everyone is waiting. If they join again (Join a Party, with your address), play goes on from the start "
-                "of this scene. Or let the computer play for them (they can still join again later), or take "
-                "everyone back to the lobby.",
+                std::string("Everyone is waiting. If they join again ") + how + ", play goes on from the start of "
+                "this scene. Or let the computer play for them (they can still join again later), or take everyone "
+                "back to the lobby.",
                 "Back to lobby", "Computer plays",
                 []() { if (asking.exchange(false)) netplay::answer_left(netplay::LeftChoice::Lobby); },
                 []() { if (asking.exchange(false)) netplay::answer_left(netplay::LeftChoice::Computer); },

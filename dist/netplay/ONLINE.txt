@@ -22,8 +22,18 @@ The others must be able to reach UDP port 7845 on the host's computer:
 - Over the internet without a VPN: forward UDP port 7845 on the host's router to the host's computer, and give the
   others the host's public address (a site such as whatismyip.com shows it).
 - On the same home network: the host's local address (like 192.168.1.20).
+- Or play on a netplay server (below): then no one opens a port.
 
 Allow the program through the firewall if your computer asks.
+
+Playing on a server
+-------------------
+A netplay server is a small program someone runs on a computer everyone can reach (a cheap VPS, or a home server
+with its port forwarded), released beside the game for Linux. It passes everyone's buttons along; each player still
+runs the game themselves. Instead of Host a Party or Join a Party, everyone chooses Play on a Server, types the
+server's address (and its password, if it has one) and chooses Connect!. The first player on the server hosts the
+party and everyone after joins it, so whoever should host connects first. From there the party works as above. Going
+through a server can add a little delay, which the game measures and covers as usual.
 
 What to expect
 --------------
@@ -50,6 +60,6 @@ players join again in any order, and the party picks up where its last scene sta
 were. Only the players of that party can resume it.
 
 This is an alpha: a resync or a player joining again goes back to the start of the current scene, and the host's port
-must be reachable.
+must be reachable (or everyone plays on a server).
 
 host.bat / host.sh and join.bat / join.sh start a session from the command line instead, for testing.

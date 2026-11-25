@@ -1,0 +1,20 @@
+# Mario Party Recompiled's netplay server as a systemd service (SERVER.txt says how to install it).
+[Unit]
+Description=Mario Party Recompiled netplay server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/netplay-server --port 7845
+# MP_NETPLAY_SERVER_PASSWORD=<password>, if it has one.
+EnvironmentFile=-/etc/netplay-server.env
+DynamicUser=yes
+RuntimeDirectory=netplay-server
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

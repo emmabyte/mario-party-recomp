@@ -1,8 +1,15 @@
 // A UDP socket for netplay's sessions (session.cpp): one bound to a local port, sending to and receiving from the
 // other copies by their addresses, on Windows (Winsock) and on POSIX systems alike. The web build has none: open()
 // fails there.
+//
+// Or through a netplay server (relay_connect, src/netplay/server/relay_protocol.h): the socket then talks only to the
+// server, which passes each packet on, and the other copies are addresses of the server's own (relay endpoints: the
+// host, and each guest by the id the server gave it), which send and receive wrap and unwrap. The session sends and
+// receives as it always does. The server's own messages are taken in by receive: a player who left the server
+// (relay_take_gone), this copy removed from it (relay_ended).
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -31,6 +38,27 @@ namespace netplay::udp {
     size_t receive(void* data, size_t size, int timeout_ms, Endpoint& from);
 
     void close();
+
+    // Joins the netplay server at "host" or "host:port" (7845 if none) as name, with its password (empty: none), on a
+    // socket of its own (open does nothing more while it is joined): true once the server has taken this copy, with
+    // whether it is the party's host (the first to join is). False, with why, if it refused, never answered, or cancel
+    // became true. The copy's token, which keeps its place across a restart into the lobby (a held host's place), is
+    // MP_NETPLAY_RELAY_TOKEN in the environment (the launcher's, from its settings), made the first time if not.
+    bool relay_connect(const std::string& server, const std::string& name, const std::string& password, bool& host,
+                       std::string& error, const std::atomic<bool>* cancel);
+    bool relay_on();
+    // The party's host, through the server, for a guest to send to.
+    Endpoint relay_host();
+    // Takes the next player the server said has left (as its goodbye): false when there is none.
+    bool relay_take_gone(Endpoint& who);
+    // Why the server no longer passes this copy's packets (removed by its admin, shut down, the server restarted), or
+    // empty.
+    std::string relay_ended();
+    // The player chooses to leave (Leave, closing the game): tells the server at once, and a host's place isn't held.
+    // A close without it says the copy dropped out (a restart back into the lobby), and a host's place is held.
+    void relay_final();
+    // The round trip to the server in ms, -1 before it is known.
+    int relay_rtt_ms();
 
     // This computer's IPv4 addresses, but loopback and link-local ones: where others may reach it (a VPN's among them).
     std::vector<std::string> local_addresses();
