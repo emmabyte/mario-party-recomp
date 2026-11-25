@@ -31,12 +31,17 @@ What to expect
 - The game measures the connection as you play and delays everyone's buttons just enough to cover it, so everyone
   sees the same game: a tenth of a second or so on a VPN. If the connection gets worse the delay goes up at once, and
   it comes back down slowly once things are steady again.
-- If a guest leaves (closes the game, or their connection is lost for 5 seconds), a computer player takes their place
-  and everyone else plays on. If the host leaves, the party ends for everyone; Resume Party brings it back.
-- If something else goes wrong (the copies differ, or the games ever play differently), each copy shows a message
-  saying what happened and closes. A message about the game playing differently ("desynced") is a bug:
-  each copy keeps a record of the session in its netplay/sessions folder (the message says where). Please send the
-  newest folder from every player.
+- If a guest leaves (closes the game, or their connection is lost for 5 seconds), everyone waits and the host
+  chooses: Computer plays (a computer player takes their place and everyone plays on) or Back to lobby (everyone goes
+  back to the party screen, and the host's party resumes where its last scene started).
+- A player who left can join again: start the game, choose Join a Party with the host's address and Connect!. This
+  works while everyone is waiting and after a computer has taken over. Everyone goes back to the start of the current
+  scene together, and the player takes their character back.
+- If the host leaves, the party ends for everyone and each game goes back to Online Play, saying why; Resume Party
+  brings it back.
+- If the games ever play differently ("desynced"), they put themselves back in step on their own: everyone sees a
+  "Resyncing" notice and goes back to the start of the current scene. That is a bug: each copy keeps a record of the
+  session in its netplay/sessions folder. Please send the newest folder from every player.
 
 If a session ends early
 -----------------------
@@ -44,7 +49,7 @@ Every computer saves the party at the start of each scene. The host chooses Resu
 players join again in any order, and the party picks up where its last scene started, each player as the player they
 were. Only the players of that party can resume it.
 
-This is an alpha: a guest who leaves can't rejoin the same session yet (Resume Party brings everyone back at the start
-of the last scene), and the host's port must be reachable.
+This is an alpha: a resync or a player joining again goes back to the start of the current scene, and the host's port
+must be reachable.
 
 host.bat / host.sh and join.bat / join.sh start a session from the command line instead, for testing.

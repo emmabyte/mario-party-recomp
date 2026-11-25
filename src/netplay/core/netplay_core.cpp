@@ -783,13 +783,15 @@ bool netplay::detail::snapshot_head(const std::vector<uint8_t>& bytes, PartySave
 namespace {
     bool resync_pending = false;
     Snapshot to_resync;
+    uint8_t resync_back = 0;
 }
 
-void netplay::detail::resync_with(std::vector<uint8_t> bytes) {
+void netplay::detail::resync_with(std::vector<uint8_t> bytes, uint8_t back) {
     PartySave head;
     if (snapshot_from_bytes(bytes, to_resync, head)) {
         party_id = head.id;
         resync_pending = true;
+        resync_back = back;
     }
 }
 
@@ -838,6 +840,24 @@ Frame netplay::advance(uint8_t* rdram) {
         snprintf(line, sizeof(line), "[netplay] resumed the party at its frame %" PRIu64 "\n", frame_no);
         log_session_line(line);
     }
+    if (detail::joining() && detail::current_mode == Mode::Session && frame_no >= 4 && game.can_snapshot != nullptr &&
+            game.can_snapshot(rdram)) {
+        // A copy joining a session in progress, once it has the host's save: takes it up as a resumed party is, at the
+        // first frame the game could be saved at, and plays the frame the others play after theirs.
+        uint8_t back = 0;
+        std::vector<uint8_t> bytes;
+        Snapshot snap;
+        PartySave head;
+        if (detail::join_now(bytes, back) && snapshot_from_bytes(bytes, snap, head)) {
+            party_id = head.id;
+            take_up(rdram, snap);
+            if (back != 0 && game.give_back != nullptr) {
+                game.give_back(rdram, back);
+            }
+            party_saved_frame = frame_no;
+            log_session_line("[netplay] joined: took up the party's save\n");
+        }
+    }
     if (resync_pending) {
         // A resync: every copy is at the same session frame here, the game anywhere; it goes back to the host's party
         // save, the start of a scene, the processes the save has yet to start put aside first.
@@ -861,6 +881,10 @@ Frame netplay::advance(uint8_t* rdram) {
         if (game.after_take_up != nullptr) {
             game.after_take_up(rdram);
         }
+        if (resync_back != 0 && game.give_back != nullptr) {
+            game.give_back(rdram, resync_back);
+        }
+        resync_back = 0;
         to_resync = Snapshot{};
         party_saved_frame = frame_no;
         char line[128];
@@ -906,7 +930,7 @@ Frame netplay::advance(uint8_t* rdram) {
         }
     }
     // The party save, at the start of each scene, once the party has started (not while it waits to resume).
-    bool safe = detail::current_mode == Mode::Session && !resume_pending && frame_no >= 4 && game.can_snapshot != nullptr &&
+    bool safe = detail::current_mode == Mode::Session && !resume_pending && !detail::joining() && frame_no >= 4 && game.can_snapshot != nullptr &&
         game.can_snapshot(rdram);
     if (safe && !was_safe && frame_no != party_saved_frame) {
         party_saved_frame = frame_no;

@@ -98,6 +98,9 @@ namespace netplay {
         void (*live_ranges)(const uint8_t* rdram, std::vector<Range>& out) = nullptr;
         // Once such a snapshot is taken up, with the live ranges put back. Optional.
         void (*after_take_up)(uint8_t* rdram) = nullptr;
+        // Once a snapshot is taken up for players who rejoined (a bit for each port): the game gives each back to its
+        // player, from the computer that played it while they were gone (Frame's left). Optional.
+        void (*give_back)(uint8_t* rdram, uint8_t ports) = nullptr;
         // Shows the players, or stops showing, that the session is putting the copies back in step after a desync,
         // as the game waits. Optional.
         void (*show_resync)(bool shown) = nullptr;

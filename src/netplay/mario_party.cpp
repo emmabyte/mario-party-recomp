@@ -441,6 +441,7 @@ bool mp_netplay::fixed_aspect() {
 
 static bool can_snapshot(const uint8_t* rdram);
 static void before_take_up(uint8_t* rdram);
+static void give_back(uint8_t* rdram, uint8_t ports);
 static std::vector<uint8_t> extra_state();
 static void set_extra_state(const std::vector<uint8_t>& in);
 
@@ -459,6 +460,7 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
     };
     game.can_snapshot = can_snapshot;
     game.before_take_up = before_take_up;
+    game.give_back = give_back;
     game.live_ranges = [](const uint8_t*, std::vector<netplay::Range>& out) {
         // What the hash leaves out (excluded): the system threads' and the runtime's, as real time passes.
         out.assign(std::begin(excluded), std::end(excluded));
@@ -520,8 +522,9 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
             asking = true;
             std::string header = std::string(name) + " left the party";
             recompui::open_choice_prompt(header,
-                "Everyone is waiting. If they come back, play goes on. Otherwise, let the computer play for them, or "
-                "take everyone back to the lobby.",
+                "Everyone is waiting. If they join again (Join a Party, with your address), play goes on from the start "
+                "of this scene. Or let the computer play for them (they can still join again later), or take "
+                "everyone back to the lobby.",
                 "Back to lobby", "Computer plays",
                 []() { if (asking.exchange(false)) netplay::answer_left(netplay::LeftChoice::Lobby); },
                 []() { if (asking.exchange(false)) netplay::answer_left(netplay::LeftChoice::Computer); },
@@ -535,11 +538,12 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
             }
         };
     } else if (const char* choice = getenv("MP_NETPLAY_TEST_LEFT_CHOICE")) {
-        // For the tests: the host's answer when a guest leaves (computer or lobby), given at once, and the program
+        // For the tests: the host's answer when a guest leaves (computer or lobby, given at once; wait, none), and the program
         // ends where it would go back to the menu, saying so.
         static bool lobby = strcmp(choice, "lobby") == 0;
+        static bool wait = strcmp(choice, "wait") == 0; // no answer: the game waits for the player to join again
         game.ask_left = [](int player, const char*) {
-            if (player >= 0) {
+            if (player >= 0 && !wait) {
                 netplay::answer_left(lobby ? netplay::LeftChoice::Lobby : netplay::LeftChoice::Computer);
             }
         };
@@ -837,6 +841,17 @@ static void prc_survey(uint8_t* rdram) {
 // The players (GwPlayer, 0x30 bytes each from 0x800F32B0) whose controller's player has left the session: each is made
 // a computer player (flags' bit 0, which the boards and minigames read as it is), every frame so that a new party's
 // setup doesn't make them human again. The frame's left mask is the same on every copy, so is this.
+// A player who rejoined (netplay::Game's give_back), once the copies have taken up the save they rejoin at: human again.
+static void give_back(uint8_t* rdram, uint8_t ports) {
+    for (int i = 0; i < 4; i++) {
+        gpr player = (int32_t)(0x800F32B0 + 0x30 * i);
+        uint8_t port = MEM_BU(3, player);
+        if (port < 4 && (ports & (1u << port)) != 0) {
+            MEM_HU(6, player) = uint16_t(MEM_HU(6, player) & ~1u);
+        }
+    }
+}
+
 static void take_over_left(uint8_t* rdram, uint8_t left) {
     if (left == 0) {
         return;

@@ -13,6 +13,8 @@
 # make a desync, for one): each guest plays from the host's save, so the session matches all the same.
 # NETPLAY_TEST_RESUME=1 plays again in the out dir's folders of a session before, the host resuming its party (the
 # party each copy saved at its last scene's start), to test that every copy takes it up alike.
+# NETPLAY_TEST_REJOIN=<seconds> starts player 2 again that long after its copy ends (MP_NETPLAY_TEST_LEAVE=<frame>:2 has
+# it leave), to join the session in progress again (its log: player2-again.log).
 # NETPLAY_TEST_GUEST_WINDOW gives the guests' windows another size than the host's 640x480 (1280x540, say), to test
 # that a window's shape changes nothing the game plays by.
 set -euo pipefail
@@ -109,6 +111,15 @@ p2="${pids[1]}"
 sleep 3
 drive "$p1" &
 driver=$!
+if [ -n "${NETPLAY_TEST_REJOIN:-}" ]; then
+    # Player 2 joins again that many seconds in, from its folder, once its copy has left (MP_NETPLAY_TEST_LEAVE).
+    wait "$p2" || true
+    sleep "$NETPLAY_TEST_REJOIN"
+    (cd "$out/player2" && exec env -u MP_NETPLAY_TEST_LEAVE MP_NETPLAY_NO_MESSAGES=1 MP_NETPLAY_MINIGAMES="$minigames" \
+        MP_NETPLAY_FRAMES="$frames" MP_NETPLAY_DROP="${MP_NETPLAY_DROP:-0}" MP_NETPLAY_PEER=127.0.0.1 \
+        "$build/MarioPartyRecompiled" --boot --window 640x480) > "$out/player2-again.log" 2>&1 < /dev/null &
+    pids[1]=$!
+fi
 status=0
 for pid in "${pids[@]}"; do
     wait "$pid" || status=1

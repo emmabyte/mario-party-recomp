@@ -49,7 +49,11 @@
 // (KIND_NOTICE). One that was only quiet and is heard again plays on. Computer plays: from the first frame of its inputs
 // the host lacks, they're empty and the frame's left mask says so, which the game reads to have a computer player take
 // that player's place (leave_session, Frame's left). Back to lobby: every copy goes back to the game's menu (Game's
-// back_to_menu), the host to its lobby again and the guests joining it. A host that leaves ends its guests'.
+// back_to_menu), the host to its lobby again and the guests joining it. A player who left can join again (rejoin_slot):
+// the host's hello says the session is in progress, the joining copy's game plays for itself (joining_frame) until it
+// has the host's party save, and the host has every copy resync to that save (check_rejoins), the joining copy taking
+// it up at the first frame its game could be saved at (join_now) and the player given back their character (the
+// resync's ports given back). A host that leaves ends its guests'.
 // Each whole frame also carries the VIs it took on the host (Frame's vis), for the game's sound to keep real time.
 
 #include "netplay_internal.h"
@@ -173,7 +177,15 @@ namespace {
         // On the host, a guest that left during the session (said goodbye, or went quiet for drop_ms): the first
         // frame its inputs are empty from, where a computer player takes its place (Frame's left). UINT32_MAX: still in.
         uint32_t left_from = UINT32_MAX;
+        // On the host, one that left and has come back: the frame it plays from again (its inputs empty and the
+        // computer playing it before), UINT32_MAX while it hasn't; and one whose copy is joining again, not yet back.
+        uint32_t left_until = UINT32_MAX;
+        bool rejoining = false;
     };
+    // On the host, whether a guest's inputs make the frames: it hasn't left, or has come back.
+    bool playing(const Remote& r) {
+        return r.left_from == UINT32_MAX || r.left_until != UINT32_MAX;
+    }
     // On a guest: the lobby's players as the host last listed them.
     struct Seat {
         bool present = false, ready = false;
@@ -187,6 +199,7 @@ namespace {
     std::string peer_text;
 
     int slot_for(const udp::Endpoint& from);
+    int rejoin_slot(const udp::Endpoint& from);
     bool receive_packet(int wait_ms);
     void drop_guest(int p);
     void leave_session(int p, const char* how);
@@ -244,6 +257,13 @@ namespace {
     std::vector<uint8_t> piece_have;     // a guest's: the pieces that have come
     bool resync_ready = false;           // a guest's: it has the save
     int resyncs = 0;
+    uint8_t resync_back = 0;             // the ports a rejoin gives back to their players (Game's give_back)
+    bool joining_now = false;            // a guest's: it joins a session in progress, and hasn't the save yet
+    // On the host, players who left during play while its player chooses (Game's ask_left): the game waits for them,
+    // as for any player's inputs, and the guests are told why (KIND_NOTICE).
+    uint8_t gone_mask = 0;
+    uint8_t gone_bye = 0; // of those, the ones that said goodbye (closed): the others may come back
+    std::atomic<LeftChoice> left_choice{ LeftChoice::None };
 
     // The save the session plays from: the host's own, which a guest has from the host's hello.
     std::vector<uint8_t> host_save;
@@ -458,6 +478,8 @@ namespace {
         bool saved = !hosting && party_resumable(mine);
         w.u8(uint8_t(saved ? mine.player : 0xFF));
         w.u64(saved ? mine.id : 0);
+        // The host's to a guest joining again: the session is in progress.
+        w.u8(hosting && handshaken ? 1 : 0);
         send(to, w);
     }
 
@@ -493,7 +515,7 @@ namespace {
     uint32_t wholes_ready() {
         uint32_t ready = uint32_t(local_inputs.size());
         for (int p = 1; p < players; p++) {
-            if (remotes[p].left_from == UINT32_MAX) {
+            if (playing(remotes[p])) {
                 ready = std::min(ready, remotes[p].next);
                 if (resyncing && !remotes[p].resync_ready) {
                     ready = std::min(ready, resync_at); // the frame the copies resync after waits for its save
@@ -507,14 +529,15 @@ namespace {
         if (p == 0) {
             return local_inputs[f];
         }
-        return f < remotes[p].left_from ? remotes[p].inputs[f] : Inputs{};
+        const Remote& r = remotes[p];
+        return f < r.left_from || f >= r.left_until ? r.inputs[f] : Inputs{};
     }
 
     // On the host, the players that have left by frame f (Frame's left).
     uint8_t left_at(uint32_t f) {
         uint8_t mask = 0;
         for (int p = 1; p < players; p++) {
-            if (f >= remotes[p].left_from) {
+            if (f >= remotes[p].left_from && f < remotes[p].left_until) {
                 mask |= uint8_t(1u << p);
             }
         }
@@ -548,7 +571,7 @@ namespace {
         uint32_t ready = wholes_ready();
         for (int p = 1; p < players; p++) {
             Remote& guest = remotes[p];
-            if (guest.left_from != UINT32_MAX) {
+            if (!playing(guest)) {
                 continue;
             }
             Writer w;
@@ -581,6 +604,7 @@ namespace {
                 rw.u64(resync_head.id);
                 rw.u32(resync_raw_size);
                 rw.u32(uint32_t(resync_packed.size()));
+                rw.u8(resync_back);
                 send(guest, rw);
             }
         }
@@ -665,6 +689,10 @@ namespace {
         }
         for (int i = 0; i < 10; i++) {
             send_hello(from); // so the other copy can say what differs too
+        }
+        if (hosting && handshaken && from.rejoining) {
+            from.rejoining = false; // a copy joining again that can't: the party goes on without it
+            return;
         }
         if (hosting && in_lobby) {
             drop_guest(who); // the lobby stays open for the others
@@ -764,8 +792,9 @@ namespace {
 
     // The resync, on the host, once a desync is found: every copy takes up the host's last party save after resync_at,
     // which waits for each guest to have it. Without a save to go back to, the session ends as it did before.
-    bool start_resync() {
-        if (resyncs >= MAX_RESYNCS || !party_bytes(resync_bytes) || !snapshot_head(resync_bytes, resync_head)) {
+    // On the host: its party save, read and compressed to send.
+    bool pack_save() {
+        if (!party_bytes(resync_bytes) || !snapshot_head(resync_bytes, resync_head)) {
             return false;
         }
         resync_packed.resize(ZSTD_compressBound(resync_bytes.size()));
@@ -776,6 +805,14 @@ namespace {
         }
         resync_packed.resize(packed);
         resync_raw_size = uint32_t(resync_bytes.size());
+        return true;
+    }
+
+    bool start_resync() {
+        if (resyncs >= MAX_RESYNCS || !pack_save()) {
+            return false;
+        }
+        resync_back = 0;
         // After the frame both copies write RDRAM at for the record, and after every frame already sent.
         resync_at = std::max<uint32_t>(std::max<uint32_t>(frames_sent_to, wholes_ready()), desync_frame + DESYNC_PLAY + 1);
         resyncing = true;
@@ -801,9 +838,11 @@ namespace {
         head.id = r.u64();
         uint32_t raw = r.u32();
         uint32_t packed = r.u32();
+        uint8_t back = r.u8();
         if (!r.ok || (resyncing && at == resync_at)) {
             return;
         }
+        resync_back = back;
         resyncing = true;
         resync_at = at;
         resync_head = head;
@@ -892,9 +931,12 @@ namespace {
     }
 
     // After the frame the copies resync after: from the next frame, the hashes compare again.
-    void finish_resync() {
+    void finish_resync(bool take = true) {
         last_resync_at = resync_at;
-        resync_with(std::move(resync_bytes));
+        if (take) {
+            resync_with(std::move(resync_bytes), resync_back);
+        }
+        resync_back = 0;
         resync_bytes.clear();
         resync_packed.clear();
         piece_have.clear();
@@ -993,8 +1035,10 @@ namespace {
                 guest.inputs.resize(f + 1);
                 guest.have.resize(f + 1, 0);
             }
-            guest.inputs[f] = in;
-            guest.have[f] = 1;
+            if (!guest.have[f]) { // a frame the host has made already stays as it was made (a rejoin's empty ones)
+                guest.inputs[f] = in;
+                guest.have[f] = 1;
+            }
         }
         while (guest.next < guest.have.size() && guest.have[guest.next]) {
             guest.next++;
@@ -1112,8 +1156,9 @@ namespace {
             return true;
         }
         if (hosting && r.ok && kind == KIND_HELLO && (who == UNASSIGNED || !handshaken)) {
-            // Before the session starts a guest is the player its address has (the guests move up when one leaves).
-            who = slot_for(from_endpoint);
+            // Before the session starts a guest is the player its address has (the guests move up when one leaves);
+            // during it, one joining again takes the place of a player who left.
+            who = handshaken ? rejoin_slot(from_endpoint) : slot_for(from_endpoint);
             if (who < 0) {
                 return false; // the session is full
             }
@@ -1173,8 +1218,17 @@ namespace {
             uint8_t their_has_party = r.u8();
             uint8_t their_saved_player = r.u8();
             uint64_t their_saved_party = r.u64();
+            bool in_progress = r.u8() != 0;
             if (!r.ok) {
                 return true;
+            }
+            if (!hosting && !handshaken && in_progress && !joining_now) {
+                // Joining a session in progress, as a player who left it: the game waits for the host's save.
+                joining_now = true;
+                say("[netplay] the party is in progress: joining it again\n");
+            }
+            if (joining_now) {
+                their_resuming = false;
             }
             if (hosting && resuming && !handshaken && their_saved_party == party_id && their_saved_player >= 1 &&
                     their_saved_player < PORTS && their_saved_player != who && !remotes[their_saved_player].known) {
@@ -1252,14 +1306,14 @@ namespace {
                 }
             }
             from.saw_ours = from.saw_ours || saw;
-            if (handshaken && !saw) {
-                send_hello(from); // it is still waiting for this copy's identity
+            if (handshaken && (!saw || from.rejoining)) {
+                send_hello(from); // it is still waiting for this copy's identity, or to be let in again
             }
         } else if (kind == KIND_INPUTS && hosting) {
             if (from.identity_ok) {
                 from.saw_ours = true;
             }
-            if (handshaken && from.left_from == UINT32_MAX) { // its buffers are made once the handshake ends
+            if (handshaken && playing(from)) { // its buffers are made once the handshake ends
                 take_inputs(r, from, who);
             }
         } else if (kind == KIND_NOTICE && handshaken && !hosting) {
@@ -1343,6 +1397,36 @@ namespace {
         }
         for (int p = 1; p < players; p++) {
             if (!remotes[p].known) {
+                return p;
+            }
+        }
+        return -1;
+    }
+
+    // On the host, during the session: a copy saying hello is a player who left joining again, in the place of the
+    // first who has left (a computer plays it, or the game waits for it), unless it is one still playing.
+    int rejoin_slot(const udp::Endpoint& from) {
+        for (int p = 1; p < players; p++) {
+            if (remotes[p].known && remotes[p].endpoint == from && (playing(remotes[p]) || remotes[p].rejoining) &&
+                    !(gone_mask & (1u << p))) {
+                return p;
+            }
+        }
+        for (int p = 1; p < players; p++) {
+            Remote& r = remotes[p];
+            if (r.rejoining && r.endpoint == from) {
+                return p;
+            }
+        }
+        for (int p = 1; p < players; p++) {
+            Remote& r = remotes[p];
+            if (!r.rejoining && (!playing(r) || (gone_mask & (1u << p)))) {
+                r.rejoining = true;
+                r.identity_ok = false;
+                r.saw_ours = false;
+                r.endpoint = from;
+                say("[netplay] frame %" PRIu64 ": player %d is joining again, from %s\n", sframe, p + 1,
+                        from.text().c_str());
                 return p;
             }
         }
@@ -1704,7 +1788,7 @@ namespace {
             header(w, KIND_BYE);
             if (hosting) {
                 for (int p = 1; p < players; p++) {
-                    if (remotes[p].left_from == UINT32_MAX) {
+                    if (playing(remotes[p])) {
                         send(remotes[p], w);
                     }
                 }
@@ -1718,24 +1802,19 @@ namespace {
     // empty and a computer player takes its place (Frame's left), and the session plays on without waiting for it.
     void leave_session(int p, const char* how) {
         Remote& guest = remotes[p];
-        if (guest.left_from != UINT32_MAX) {
+        if (!playing(guest)) {
             return;
         }
         guest.left_from = std::max(guest.next, uint32_t(first_delay));
+        guest.left_until = UINT32_MAX;
         say("[netplay] frame %" PRIu64 ": player %d %s; a computer player takes their place from frame %u\n", sframe,
                 p + 1, how, guest.left_from);
         session_cv.notify_all();
     }
 
-    // On the host, players who left during play while its player chooses (Game's ask_left): the game waits for them,
-    // as for any player's inputs, and the guests are told why (KIND_NOTICE).
-    uint8_t gone_mask = 0;
-    uint8_t gone_bye = 0; // of those, the ones that said goodbye (closed): the others may come back
-    std::atomic<LeftChoice> left_choice{ LeftChoice::None };
-
     void send_notice(uint8_t code, int about) {
         for (int p = 1; p < players; p++) {
-            if (remotes[p].known && remotes[p].left_from == UINT32_MAX && !(gone_mask & (1u << p))) {
+            if (remotes[p].known && playing(remotes[p]) && !(gone_mask & (1u << p))) {
                 Writer w;
                 header(w, KIND_NOTICE);
                 w.u8(code);
@@ -1751,7 +1830,7 @@ namespace {
     }
 
     void guest_gone(int p, const char* how) {
-        if (remotes[p].left_from != UINT32_MAX || (gone_mask & (1u << p))) {
+        if (!playing(remotes[p]) || (gone_mask & (1u << p))) {
             return;
         }
         if (game.ask_left == nullptr) {
@@ -1812,6 +1891,98 @@ namespace {
         }
     }
 
+    // On the host, a player joining again whose copy has finished its hellos: every copy goes back to the host's party
+    // save (the last scene's start) after the same frame, the player's own with it, and plays on from there with the
+    // player back in place of the computer (a resync, whose save carries the ports given back).
+    void check_rejoins() {
+        if (resyncing) {
+            return; // after the resync under way
+        }
+        for (int p = 1; p < players; p++) {
+            Remote& g = remotes[p];
+            if (!g.rejoining || !g.identity_ok || !g.saw_ours) {
+                continue;
+            }
+            if (!pack_save()) {
+                say("[netplay] player %d can't join again: the party has no save yet\n", p + 1);
+                g.rejoining = false;
+                continue;
+            }
+            uint8_t bit = uint8_t(1u << p);
+            if (playing(g)) {
+                // Gone, while the game waited for it: its inputs end where they stopped.
+                g.left_from = std::max(g.next, uint32_t(first_delay));
+                g.left_until = UINT32_MAX;
+            }
+            if (gone_mask & bit) {
+                gone_mask &= uint8_t(~bit);
+                gone_bye &= uint8_t(~bit);
+                if (gone_mask == 0) {
+                    if (game.ask_left != nullptr) game.ask_left(-1, nullptr);
+                    for (int i = 0; i < 5; i++) send_notice(NOTICE_NONE, p);
+                }
+            }
+            resync_at = std::max<uint32_t>(frames_sent_to, wholes_ready());
+            uint32_t back_at = resync_at + 1;
+            // Its inputs until then are empty, and it plays from back_at.
+            if (g.inputs.size() < back_at) {
+                g.inputs.resize(back_at);
+                g.have.resize(back_at, 0);
+            }
+            for (uint32_t f = 0; f < back_at; f++) {
+                if (!g.have[f]) {
+                    g.inputs[f] = Inputs{};
+                    g.have[f] = 1;
+                }
+            }
+            g.next = std::max(g.next, back_at);
+            while (g.next < g.have.size() && g.have[g.next]) {
+                g.next++;
+            }
+            g.ack = back_at;
+            g.left_until = back_at;
+            g.rejoining = false;
+            g.hashes.clear();
+            g.compare_from = back_at;
+            g.heard = Clock::now();
+            resync_back = bit;
+            resyncing = true;
+            for (int q = 1; q < players; q++) {
+                remotes[q].resync_ready = false;
+            }
+            say("[netplay] frame %" PRIu64 ": player %d joins again: every copy goes back to the save of frame %" PRIu64
+                " after frame %u\n", sframe, p + 1, resync_head.frame, resync_at);
+            if (game.show_resync != nullptr) {
+                game.show_resync(true);
+            }
+            return; // one at a time
+        }
+    }
+
+    // On a guest joining a session in progress, at each of its frames until it has the host's save: the game plays
+    // for itself meanwhile, with no one's inputs, and once the save is here the copy goes to the frame after the one
+    // the copies resync after, its buffers as if it had played to there.
+    Frame joining_frame() {
+        while (receive_packet(0)) {
+        }
+        static uint32_t calls = 0;
+        if (++calls % 10 == 0) {
+            if (resyncing) {
+                send_resync_ack();
+            } else {
+                send_hello(remotes[0]);
+            }
+        }
+        if (Clock::now() - remotes[0].heard > std::chrono::milliseconds(timeout_ms)) {
+            say("[netplay] the host stopped answering\n");
+            end_session(3);
+        }
+        Frame fr;
+        fr.connected = uint8_t(connected_mask);
+        fr.vis = 2;
+        return fr;
+    }
+
     // On a guest, the host's KIND_NOTICE.
     uint8_t notice_shown = NOTICE_NONE;
     void take_notice(Reader& r) {
@@ -1844,10 +2015,10 @@ namespace {
         int first = hosting ? 1 : 0, last = hosting ? players : 1;
         who = first;
         for (int p = first; p < last; p++) {
-            if (hosting && (remotes[p].left_from != UINT32_MAX || (gone_mask & (1u << p)))) {
+            if (hosting && (!playing(remotes[p]) || (gone_mask & (1u << p)))) {
                 continue;
             }
-            if (remotes[who].left_from != UINT32_MAX || remotes[p].heard < remotes[who].heard) {
+            if ((hosting && !playing(remotes[who])) || remotes[p].heard < remotes[who].heard) {
                 who = p;
             }
         }
@@ -1933,6 +2104,9 @@ Frame netplay::detail::session_frame(uint64_t hash) {
             r.heard = Clock::now(); // the time from the lobby to the game's first frame doesn't count as silence
         }
     }
+    if (joining_now) {
+        return joining_frame();
+    }
     if (session_frames >= 0 && int64_t(sframe) >= session_frames) {
         // Stay until the others have this copy's part of every frame they play, then end.
         auto until = Clock::now() + std::chrono::seconds(3);
@@ -1962,6 +2136,9 @@ Frame netplay::detail::session_frame(uint64_t hash) {
 
     while (receive_packet(0)) {
     }
+    if (hosting) {
+        check_rejoins();
+    }
     send_all();
     bool told = false;
     auto wait_start = Clock::now();
@@ -1981,6 +2158,7 @@ Frame netplay::detail::session_frame(uint64_t hash) {
         }
         if (hosting) {
             check_left_choice();
+            check_rejoins();
         }
         if (hosting && silent > std::chrono::milliseconds(drop_ms)) {
             guest_gone(who, "stopped answering");
@@ -2023,6 +2201,43 @@ void netplay::detail::start_session() {
         save_used = true;
         game.use_save(host_save);
     }
+}
+
+bool netplay::detail::join_now(std::vector<uint8_t>& bytes, uint8_t& back) {
+    std::lock_guard<std::recursive_mutex> lock(session_mutex);
+    if (!joining_now || !resyncing || !resync_ready) {
+        return false;
+    }
+    bytes = resync_bytes;
+    back = resync_back;
+    uint32_t back_at = resync_at + 1;
+    finish_resync(false);
+    joining_now = false;
+    sframe = back_at;
+    local_hashes.assign(back_at, 0);
+    local_inputs.assign(size_t(back_at) + size_t(delay), Inputs{});
+    local_vis.assign(size_t(back_at) + size_t(delay), 2);
+    size_t n = std::max<size_t>(wholes.size(), back_at);
+    wholes.resize(n);
+    whole_have.resize(n, 0);
+    wholes_vis.resize(n, 2);
+    wholes_left.resize(n, 0);
+    for (uint32_t f = 0; f < back_at; f++) {
+        whole_have[f] = 1;
+    }
+    Remote& host = remotes[0];
+    host.next = back_at;
+    while (host.next < whole_have.size() && whole_have[host.next]) {
+        host.next++;
+    }
+    host.ack = back_at;
+    say("[netplay] joined the party again: playing from frame %u\n", back_at);
+    send_all();
+    return true;
+}
+
+bool netplay::detail::joining() {
+    return joining_now;
 }
 
 void netplay::answer_left(LeftChoice choice) {

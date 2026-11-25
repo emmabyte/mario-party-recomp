@@ -76,8 +76,14 @@ namespace netplay::detail {
 
     // The resync (session.cpp): after a desync every copy takes up the host's last party save at the same frame. The
     // save goes about as party.snap's bytes: party_bytes reads this copy's, snapshot_head reads such bytes' header, and
-    // resync_with has the copy take them up at the start of its next frame.
+    // resync_with has the copy take them up at the start of its next frame, giving back the ports in back to their
+    // players (a rejoin, Game's give_back). A rejoin is a resync too: joining says a copy is joining a session in
+    // progress, whose game plays only for itself until it takes the save up, and saves no party meanwhile.
     bool party_bytes(std::vector<uint8_t>& out);
     bool snapshot_head(const std::vector<uint8_t>& bytes, PartySave& head);
-    void resync_with(std::vector<uint8_t> bytes);
+    void resync_with(std::vector<uint8_t> bytes, uint8_t back);
+    bool joining();
+    // On a joining copy that has the save: its bytes, the ports given back, and the session at the frame after the
+    // one the others take it up after. False while it hasn't.
+    bool join_now(std::vector<uint8_t>& bytes, uint8_t& back);
 }

@@ -125,7 +125,12 @@ that had only gone quiet and is heard again plays on. Computer plays: the host p
 from the first frame it lacks, and each frame's `left` mask (carried in the frames the host sends and in recordings)
 has the game make that player a computer player (`mario_party.cpp`'s take_over_left). Back to lobby: every copy goes
 back to Online Play, the host into its lobby with Resume Party (the party as it was at the last scene's start) and the
-guests joining it again. A host that leaves (its goodbye, or quiet for 15 seconds) ends its guests' sessions, and
+guests joining it again. A player who left can join the session again, by joining the host as at the start, while the
+game waits for them or once a computer plays for them: the host's hello says the session is in progress, the copy's
+game plays for itself until it has the host's party save (its own when that is the same), and every copy resyncs to
+that save at the same frame, the joining copy taking it up as a resumed party is (at the first frame its game could be
+saved at) and the player's character given back to them (Game's `give_back`). `NETPLAY_TEST_REJOIN` has the session
+test start player 2 again after it leaves; `MP_NETPLAY_TEST_LEFT_CHOICE=wait` leaves the host's question open. A host that leaves (its goodbye, or quiet for 15 seconds) ends its guests' sessions, and
 Resume Party picks the party up again. A session that ends for a reason (copies that differ, the host gone, a desync it
 can't resync) goes back to Online Play, which says why: the game can't be unloaded as it runs, so the program starts
 again in its launcher (src/netplay/restart.cpp, Game's `back_to_menu`). For the tests (`MP_NETPLAY_NO_MESSAGES`), it
