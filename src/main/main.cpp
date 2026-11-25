@@ -454,7 +454,37 @@ static std::string game_thread_name(const OSThread* t) {
 // needs nobody at the window. Needs the ROM already stored.
 static bool autoboot = false;
 
+// Online Play's screens (src/netplay/online_screens.cpp), where a party is hosted or joined and starts the game once
+// everyone is ready.
+static void open_online_play() {
+    const recomp::GameEntry& game = supported_games[0];
+    recompui::update_game_mod_id(game.mod_game_id);
+    std::u8string game_id = game.game_id;
+    mp_netplay::open_online([game_id]() {
+        if (!recomp::is_rom_valid(game_id)) {
+            recompui::open_info_prompt("Online Play", "Load your Mario Party ROM first, with Load ROM in the "
+                "launcher.", "OK", []() {}, recompui::ButtonStyle::Primary);
+            return false;
+        }
+        return true;
+    }, [game_id]() {
+        recomp::start_game(game_id, {});
+        recompui::hide_all_contexts();
+    });
+}
+
+// Back from a party that ended (src/netplay/restart.cpp started the program again): Online Play on the launcher's
+// first frame, saying why, and the lobby again when the host took everyone back to it.
+static bool returning_online = false;
+static std::string return_reason;
+static std::string return_lobby;
+
 void on_launcher_update(recompui::LauncherMenu*) {
+    if (returning_online) {
+        returning_online = false;
+        open_online_play();
+        mp_netplay::online_returned(return_reason, return_lobby);
+    }
     static bool done = false;
     if (!autoboot || done) {
         return;
@@ -476,20 +506,7 @@ void on_launcher_init(recompui::LauncherMenu* menu) {
     // starts the game once everyone is ready (src/netplay/online_screens.cpp).
     game_options_menu->add_start_game_or_load_rom_option();
     if (mp_netplay::available()) {
-        game_options_menu->add_option("Online Play", [mod_game_id = game.mod_game_id, game_id = game.game_id]() {
-            recompui::update_game_mod_id(mod_game_id);
-            mp_netplay::open_online([game_id]() {
-                if (!recomp::is_rom_valid(game_id)) {
-                    recompui::open_info_prompt("Online Play", "Load your Mario Party ROM first, with Load ROM in the "
-                        "launcher.", "OK", []() {}, recompui::ButtonStyle::Primary);
-                    return false;
-                }
-                return true;
-            }, [game_id]() {
-                recomp::start_game(game_id, {});
-                recompui::hide_all_contexts();
-            });
-        });
+        game_options_menu->add_option("Online Play", open_online_play);
     }
     game_options_menu->add_setup_controls_option();
     game_options_menu->add_settings_option();
@@ -641,6 +658,7 @@ int main(int argc, char** argv) {
     };
 
     mp_netplay::init(input_callbacks, version_string);
+    returning_online = mp_netplay::available() && mp_netplay::returning(return_reason, return_lobby);
 
     ultramodern::events::callbacks_t thread_callbacks{
         .vi_callback = recompinput::update_rumble,

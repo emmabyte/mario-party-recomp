@@ -249,6 +249,7 @@ namespace {
         bool toast_shown = false;
 
         Element* menu;
+        Label* menu_note;
         TextInput* name_input;
         Button* host_button;
         Button* resume_button;
@@ -293,6 +294,9 @@ namespace {
             context.create_element<Label>(menu, "Online Play", LabelStyle::Large);
             Label* sub = context.create_element<Label>(menu, "Play with friends over the internet.", LabelStyle::Small);
             sub->set_color(theme::color::TextDim);
+            // Why the game came back here from a party, if it did (returned).
+            menu_note = context.create_element<Label>(menu, "", LabelStyle::Small);
+            menu_note->set_color(theme::color::Danger);
             context.create_element<Label>(menu, "Your name", LabelStyle::Small);
             name_input = context.create_element<TextInput>(menu);
             name_input->add_text_changed_callback([](const std::string& text) { set_option("name", trimmed(text)); });
@@ -402,6 +406,21 @@ namespace {
             }
         }
 
+    public:
+        // Back from a party that ended (mp_netplay::online_returned): why, on the menu, and the lobby again if the host
+        // took everyone back to it: the host's resuming the party, a guest's joining the host's address again.
+        void returned(const std::string& reason, const std::string& lobby) {
+            show(Screen::Menu);
+            menu_note->set_text(reason);
+            if (lobby == "host") {
+                host(true);
+            } else if (lobby == "join") {
+                show(Screen::Join);
+                connect();
+            }
+        }
+
+    private:
         netplay::SessionSettings settings(bool as_host) {
             netplay::SessionSettings s;
             s.host = as_host;
@@ -629,6 +648,17 @@ void mp_netplay::open_online(std::function<bool()> can_start, std::function<void
         prev_context.open();
     }
     show_context(online.context, "");
+}
+
+void mp_netplay::online_returned(const std::string& reason, const std::string& lobby) {
+    // From the launcher's update, in its context, as open_online.
+    ContextId prev_context = try_close_current_context();
+    online.context.open();
+    online.screens->returned(reason, lobby);
+    online.context.close();
+    if (prev_context != ContextId::null()) {
+        prev_context.open();
+    }
 }
 
 void mp_netplay::close_online() {

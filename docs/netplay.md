@@ -119,12 +119,18 @@ replayable past a resync. `MP_NETPLAY_TEST_SEND_SAVE` on a guest has the host se
 the tests. `tools/netplay_rdram_diff.py` names what differs between the two copies' files by symbol, and replaying each
 copy's record on one computer shows which went its own way. `MP_NETPLAY_TEST_POKE=<frame>:<address>` changes a word of
 RDRAM at that frame, a desync to test this with (`NETPLAY_TEST_GUEST_ENV` passes it to the session test's guests). During a session, a recording or a replay the patches that work out game state from the window's shape (a board's camera, a widened stage) take it as 16:9 whatever the window (`mp_play_aspect_ratio`, src/game/recomp_api.cpp), so that copies with windows of different shapes keep the same game; `NETPLAY_TEST_GUEST_WINDOW` gives the session test's guests another window. A guest that leaves during a session (its window closed, which sends a goodbye, or quiet for 5
-seconds) doesn't end it: the host plays on with that player's inputs empty from the first frame it lacks, and each
-frame's `left` mask (carried in the frames the host sends and in recordings) has the game make that player a computer
-player (`mario_party.cpp`'s take_over_left). A host that leaves (its goodbye, or quiet for 15 seconds) ends its guests'
-sessions, and Resume Party picks the party up again. A session that ends for a reason (copies that differ, the host
-gone, a desync it can't resync, a host not found) shows it in a window before the program closes, as stderr reaches no one from the Windows
-build (`MP_NETPLAY_NO_MESSAGES` leaves the window out, for the tests).
+seconds) doesn't end it. The game waits for it, as for any late player, and the host's player is asked what happens
+next (Game's `ask_left`), while the other guests are told why they wait (`KIND_NOTICE`, Game's `show_notice`). A guest
+that had only gone quiet and is heard again plays on. Computer plays: the host plays on with that player's inputs empty
+from the first frame it lacks, and each frame's `left` mask (carried in the frames the host sends and in recordings)
+has the game make that player a computer player (`mario_party.cpp`'s take_over_left). Back to lobby: every copy goes
+back to Online Play, the host into its lobby with Resume Party (the party as it was at the last scene's start) and the
+guests joining it again. A host that leaves (its goodbye, or quiet for 15 seconds) ends its guests' sessions, and
+Resume Party picks the party up again. A session that ends for a reason (copies that differ, the host gone, a desync it
+can't resync) goes back to Online Play, which says why: the game can't be unloaded as it runs, so the program starts
+again in its launcher (src/netplay/restart.cpp, Game's `back_to_menu`). For the tests (`MP_NETPLAY_NO_MESSAGES`), it
+ends instead, printing why; `MP_NETPLAY_TEST_LEFT_CHOICE` (computer or lobby) answers the host's question at once, and
+`MP_NETPLAY_TEST_LEAVE=<frame>[:<player>]` has a copy leave at a frame.
 
 Online, the game makes its sound as its frames come: each frame steps the sound driver as many retraces (2 to 4) as
 that frame took in real time where it was first played (the host's, or the recorder's), carried with the frame as its

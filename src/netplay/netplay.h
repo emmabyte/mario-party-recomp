@@ -30,6 +30,14 @@ namespace mp_netplay {
     void set_online_config(recomp::config::Config* config);
     void open_online(std::function<bool()> can_start, std::function<void()> start_game);
     void close_online();
+    // As the launcher opens after a party ended (the program starts again in its menu: back_to_menu): opens Online
+    // Play saying why, and the lobby again when lobby is "host" or "join". returning() reads, once, what the
+    // party left for it (empty reason and lobby: nothing).
+    void online_returned(const std::string& reason, const std::string& lobby);
+    bool returning(std::string& reason, std::string& lobby);
+    // restart.cpp: starts the program again, in its launcher, which opens Online Play with reason (and the lobby
+    // again when lobby is "host" or "join"). Doesn't return.
+    [[noreturn]] void restart_to_menu(const std::string& reason, const char* lobby);
 
     // Whether an online session is running: the sound keeps a cushion then (src/main/main.cpp).
     bool active();

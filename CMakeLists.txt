@@ -266,6 +266,7 @@ if (MP_NETPLAY)
         ${CMAKE_SOURCE_DIR}/src/netplay/mario_party.cpp
         ${CMAKE_SOURCE_DIR}/src/netplay/online_tab.cpp
         ${CMAKE_SOURCE_DIR}/src/netplay/online_screens.cpp
+        ${CMAKE_SOURCE_DIR}/src/netplay/restart.cpp
     )
     # zstd, which RT64 builds, compresses the party save a resync sends a copy that hasn't it (core/session.cpp).
     target_link_libraries(MarioPartyRecompiled PRIVATE libzstd_static)

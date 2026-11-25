@@ -101,6 +101,17 @@ namespace netplay {
         // Shows the players, or stops showing, that the session is putting the copies back in step after a desync,
         // as the game waits. Optional.
         void (*show_resync)(bool shown) = nullptr;
+        // A session started from the lobby that ends for a reason (code as end_session's, the session's words): the
+        // game goes back to its menu rather than closing, and doesn't return. lobby is "host" or "join" to open the
+        // lobby again there (everyone back to the lobby), or null. Optional: without it the program ends, saying why.
+        void (*back_to_menu)(int code, const char* text, const char* lobby) = nullptr;
+        // On the host, a guest has left during play (said goodbye, or went quiet): the game waits, and asks the host's
+        // player what to do, who answers with netplay::answer_left. Optional: without it a computer player takes the
+        // guest's place at once. player -1: the question is over (the guest came back), to close it.
+        void (*ask_left)(int player, const char* name) = nullptr;
+        // On every copy: a notice over the game while it waits for something (a player who left, the host's choice),
+        // or none (an empty text).
+        void (*show_notice)(const char* text) = nullptr;
     };
 
     enum class Mode { Off, Record, Replay, Session };
@@ -175,6 +186,10 @@ namespace netplay {
     void lobby_close();
     // Once the status is Ready. Returns false before.
     bool lobby_play();
+    // The host's player's answer to Game's ask_left: a computer player takes the guest's place, or everyone goes back
+    // to the lobby.
+    enum class LeftChoice { None, Computer, Lobby };
+    void answer_left(LeftChoice choice);
 
     // Before the game starts (before it reads its save): a session's handshake, which waits for every player, and the
     // host's save for a guest (Game's use_save). Does nothing but in a session. Without it, the handshake comes at the

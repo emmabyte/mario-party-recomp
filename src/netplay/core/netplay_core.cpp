@@ -21,6 +21,8 @@
 //   <file>.frame<n>.snap. MP_NETPLAY_RESTORE=<snap>, in a replay: at the first frame the game can take one at (from
 //   the fourth), takes up the snapshot's frame in its place and replays on from there, to test that it plays alike.
 // - MP_NETPLAY_TEST_POKE=<frame>:<hex address>: changes RDRAM there at that frame, a desync for the tests.
+// - MP_NETPLAY_TEST_LEAVE=<frame>[:<player, from 1>]: leaves the session at that frame (says goodbye and ends), for
+//   the tests; with a player, only that player's copy.
 // - MP_NETPLAY_NO_MESSAGES=1: a session that ends for a reason only prints it, with no window for the player to close
 //   (for tests; src/netplay/mario_party.cpp).
 
@@ -876,6 +878,22 @@ Frame netplay::advance(uint8_t* rdram) {
                 poke_address = uint32_t(strtoul(colon + 1, nullptr, 16)) & ~3u;
             }
         }
+    }
+    static int64_t leave_frame = -1;
+    static int leave_player = -1;
+    if (frame_no == 0) {
+        if (const char* leave = getenv("MP_NETPLAY_TEST_LEAVE")) {
+            leave_frame = strtoll(leave, nullptr, 10);
+            leave_player = strchr(leave, ':') != nullptr ? atoi(strchr(leave, ':') + 1) : -1;
+        }
+    }
+    if (detail::current_mode == Mode::Session && int64_t(frame_no) == leave_frame &&
+            (leave_player < 0 || leave_player == detail::party_player + 1)) {
+        // A player leaving on purpose (the program closed), for the tests.
+        fprintf(stderr, "[netplay] frame %" PRIu64 ": leaving, as MP_NETPLAY_TEST_LEAVE says\n", frame_no);
+        netplay::leave();
+        fflush(stderr);
+        std::_Exit(0);
     }
     if (int64_t(frame_no) == poke_frame && poke_address >= 0x80000000u && poke_address < 0x80000000u + RDRAM_SIZE) {
         rdram[poke_address - 0x80000000u] ^= 0x5A;

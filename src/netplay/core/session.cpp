@@ -44,9 +44,12 @@
 // host has every copy take up its last party save after the same frame, which it holds back until each guest has the
 // save (KIND_RESYNC, KIND_RESYNC_ACK, KIND_SAVE_PIECE), and the hashes compare again from the frame after.
 //
-// A guest that leaves (its goodbye as its window closes, or quiet for drop_ms) doesn't end the host's session: from the
-// first frame of its inputs the host lacks, they're empty and the frame's left mask says so, which the game reads to
-// have a computer player take that player's place (leave_session, Frame's left). A host that leaves ends its guests'.
+// A guest that leaves (its goodbye as its window closes, or quiet for drop_ms) doesn't end the host's session: the
+// frames wait for it while the host's player chooses (guest_gone, Game's ask_left) and the other guests are told why
+// (KIND_NOTICE). One that was only quiet and is heard again plays on. Computer plays: from the first frame of its inputs
+// the host lacks, they're empty and the frame's left mask says so, which the game reads to have a computer player take
+// that player's place (leave_session, Frame's left). Back to lobby: every copy goes back to the game's menu (Game's
+// back_to_menu), the host to its lobby again and the guests joining it. A host that leaves ends its guests'.
 // Each whole frame also carries the VIs it took on the host (Frame's vis), for the game's sound to keep real time.
 
 #include "netplay_internal.h"
@@ -77,7 +80,7 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
     constexpr uint32_t SESSION_MAGIC = 0x534E504D; // "MPNS"
-    constexpr uint32_t SESSION_VERSION = 8;
+    constexpr uint32_t SESSION_VERSION = 9;
     constexpr uint8_t KIND_HELLO = 0;
     constexpr uint8_t KIND_INPUTS = 1; // a guest's to the host
     constexpr uint8_t KIND_FRAMES = 2; // the host's to a guest
@@ -91,6 +94,8 @@ namespace {
     constexpr uint32_t PIECES_WANTED = 96;  // pieces a guest asks for at once
     constexpr int MAX_RESYNCS = 8;          // a session that keeps desyncing ends after this many
     constexpr uint8_t LEFT_RESYNC = 0x80;   // in a whole frame's left byte: the copies resync after this frame
+    constexpr uint8_t KIND_NOTICE = 8;      // the host's to the guests: a player left (the host chooses), or back to the lobby
+    constexpr uint8_t NOTICE_NONE = 0, NOTICE_LEFT = 1, NOTICE_LOBBY = 2;
     constexpr int MAX_SEND = 24;
     constexpr int HASHES_SENT = 4;
     constexpr size_t MAX_IDENTITY = 800;
@@ -122,6 +127,7 @@ namespace {
         int code;
     };
     bool in_lobby = false;       // the lobby's thread runs the handshake: end_session throws LobbyEnded
+    size_t said_in_play = 0;     // where in said the lines of the session's play begin
     bool lobby_started = false;  // the host's player pressed Start: how many play is settled
     std::atomic<bool> lobby_start_wanted{ false };
     std::atomic<bool> lobby_cancel{ false };
@@ -184,6 +190,8 @@ namespace {
     bool receive_packet(int wait_ms);
     void drop_guest(int p);
     void leave_session(int p, const char* how);
+    void guest_gone(int p, const char* how);
+    void check_left_choice();
 
     uint64_t clock_us() {
         return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count()) | 1;
@@ -210,6 +218,8 @@ namespace {
         void pad(const Pad& p) { u16(p.button); u8(uint8_t(p.stick_x)); u8(uint8_t(p.stick_y)); u8(p.err_no); }
         void bytes(const uint8_t* p, size_t size) { for (size_t i = 0; i < size; i++) u8(p[i]); }
     };
+    struct Reader;
+    void take_notice(Reader& r);
     struct Reader {
         const uint8_t* buf;
         size_t n, at = 0;
@@ -262,6 +272,17 @@ namespace {
         }
         fflush(stderr);
         close_session_record();
+        if (code != 0 && game.back_to_menu != nullptr) {
+            // The reason: the last line the session said in play, without its frame.
+            std::string text = said.substr(std::min(said_in_play, said.size()));
+            while (!text.empty() && text.back() == '\n') text.pop_back();
+            size_t nl = text.rfind('\n');
+            if (nl != std::string::npos) text = text.substr(nl + 1);
+            if (text.rfind("frame ", 0) == 0 && text.find(": ") != std::string::npos) text = text.substr(text.find(": ") + 2);
+            if (!text.empty()) text[0] = char(toupper(uint8_t(text[0])));
+            udp::close();
+            game.back_to_menu(code, text.c_str(), nullptr);
+        }
         if (code != 0 && game.show_message != nullptr) {
             std::string text = said;
             if (code == 2 && !session_record_folder().empty()) {
@@ -1063,7 +1084,7 @@ namespace {
             if (handshaken) {
                 for (int p = 1; p < players; p++) {
                     if (remotes[p].known && remotes[p].endpoint == from_endpoint) {
-                        leave_session(p, "left");
+                        guest_gone(p, "left");
                         break;
                     }
                 }
@@ -1241,6 +1262,8 @@ namespace {
             if (handshaken && from.left_from == UINT32_MAX) { // its buffers are made once the handshake ends
                 take_inputs(r, from, who);
             }
+        } else if (kind == KIND_NOTICE && handshaken && !hosting) {
+            take_notice(r);
         } else if (kind == KIND_RESYNC && handshaken && !hosting) {
             take_resync(r);
         } else if (kind == KIND_SAVE_PIECE && handshaken && !hosting) {
@@ -1704,12 +1727,124 @@ namespace {
         session_cv.notify_all();
     }
 
+    // On the host, players who left during play while its player chooses (Game's ask_left): the game waits for them,
+    // as for any player's inputs, and the guests are told why (KIND_NOTICE).
+    uint8_t gone_mask = 0;
+    uint8_t gone_bye = 0; // of those, the ones that said goodbye (closed): the others may come back
+    std::atomic<LeftChoice> left_choice{ LeftChoice::None };
+
+    void send_notice(uint8_t code, int about) {
+        for (int p = 1; p < players; p++) {
+            if (remotes[p].known && remotes[p].left_from == UINT32_MAX && !(gone_mask & (1u << p))) {
+                Writer w;
+                header(w, KIND_NOTICE);
+                w.u8(code);
+                w.u8(uint8_t(about));
+                send(remotes[p], w);
+            }
+        }
+    }
+
+    std::string player_name(int p) {
+        const std::string& name = remotes[p].name;
+        return name.empty() ? "Player " + std::to_string(p + 1) : name;
+    }
+
+    void guest_gone(int p, const char* how) {
+        if (remotes[p].left_from != UINT32_MAX || (gone_mask & (1u << p))) {
+            return;
+        }
+        if (game.ask_left == nullptr) {
+            leave_session(p, how);
+            return;
+        }
+        say("[netplay] frame %" PRIu64 ": player %d %s; waiting for the host's choice\n", sframe, p + 1, how);
+        bool first = gone_mask == 0;
+        gone_mask |= uint8_t(1u << p);
+        if (strcmp(how, "left") == 0) {
+            gone_bye |= uint8_t(1u << p);
+        }
+        if (first) {
+            left_choice = LeftChoice::None;
+        }
+        game.ask_left(p, player_name(p).c_str());
+    }
+
+    // On the host, each time the frame waits: the guests told, and the player's choice once it comes.
+    void check_left_choice() {
+        if (gone_mask == 0) {
+            return;
+        }
+        int about = 0;
+        for (int p = 1; p < players; p++) {
+            if (gone_mask & (1u << p)) about = p;
+        }
+        LeftChoice choice = left_choice.load();
+        if (choice == LeftChoice::None) {
+            // One that only went quiet and is heard again (its connection came back) plays on.
+            for (int p = 1; p < players; p++) {
+                if ((gone_mask & ~gone_bye & (1u << p)) && Clock::now() - remotes[p].heard < std::chrono::seconds(1)) {
+                    gone_mask &= uint8_t(~(1u << p));
+                    say("[netplay] frame %" PRIu64 ": player %d is back\n", sframe, p + 1);
+                }
+            }
+            if (gone_mask == 0) {
+                game.ask_left(-1, nullptr);
+                for (int i = 0; i < 5; i++) send_notice(NOTICE_NONE, about);
+                return;
+            }
+            send_notice(NOTICE_LEFT, about);
+        } else if (choice == LeftChoice::Computer) {
+            uint8_t gone = gone_mask;
+            gone_mask = gone_bye = 0;
+            for (int p = 1; p < players; p++) {
+                if (gone & (1u << p)) leave_session(p, "left");
+            }
+            for (int i = 0; i < 5; i++) send_notice(NOTICE_NONE, about);
+            if (game.show_notice != nullptr) game.show_notice("");
+        } else {
+            say("[netplay] frame %" PRIu64 ": everyone goes back to the lobby\n", sframe);
+            for (int i = 0; i < 10; i++) send_notice(NOTICE_LOBBY, about);
+            fflush(stderr);
+            close_session_record();
+            udp::close();
+            game.back_to_menu(0, "", "host");
+        }
+    }
+
+    // On a guest, the host's KIND_NOTICE.
+    uint8_t notice_shown = NOTICE_NONE;
+    void take_notice(Reader& r) {
+        uint8_t code = r.u8();
+        int about = r.u8();
+        if (!r.ok || about >= PORTS) {
+            return;
+        }
+        if (code == NOTICE_LOBBY && game.back_to_menu != nullptr) {
+            say("[netplay] the host takes everyone back to the lobby\n");
+            fflush(stderr);
+            close_session_record();
+            udp::close();
+            game.back_to_menu(0, "", "join");
+        }
+        if (code == notice_shown || game.show_notice == nullptr) {
+            return;
+        }
+        notice_shown = code;
+        if (code == NOTICE_LEFT) {
+            std::string name = roster[about].name.empty() ? "Player " + std::to_string(about + 1) : roster[about].name;
+            game.show_notice((name + " left the party. Waiting for the host to choose what happens next...").c_str());
+        } else {
+            game.show_notice("");
+        }
+    }
+
     // The copy that has been silent longest, while a frame waits (of the guests still in, on the host).
     const Remote& quietest(int& who) {
         int first = hosting ? 1 : 0, last = hosting ? players : 1;
         who = first;
         for (int p = first; p < last; p++) {
-            if (hosting && remotes[p].left_from != UINT32_MAX) {
+            if (hosting && (remotes[p].left_from != UINT32_MAX || (gone_mask & (1u << p)))) {
                 continue;
             }
             if (remotes[who].left_from != UINT32_MAX || remotes[p].heard < remotes[who].heard) {
@@ -1793,6 +1928,7 @@ Frame netplay::detail::session_frame(uint64_t hash) {
     if (!record_opened) {
         record_opened = true;
         open_session_record(player, host_save, said);
+        said_in_play = said.size();
         for (Remote& r : remotes) {
             r.heard = Clock::now(); // the time from the lobby to the game's first frame doesn't count as silence
         }
@@ -1843,8 +1979,11 @@ Frame netplay::detail::session_frame(uint64_t hash) {
             say("[netplay] frame %" PRIu64 ": waiting for player %d\n", sframe, who + 1);
             told = true;
         }
+        if (hosting) {
+            check_left_choice();
+        }
         if (hosting && silent > std::chrono::milliseconds(drop_ms)) {
-            leave_session(who, "stopped answering");
+            guest_gone(who, "stopped answering");
         } else if (!hosting && silent > std::chrono::milliseconds(timeout_ms)) {
             say("[netplay] frame %" PRIu64 ": the host stopped answering. The party was saved at the start of the last "
                 "scene: the host can pick it up with Resume Party.\n", sframe);
@@ -1884,6 +2023,11 @@ void netplay::detail::start_session() {
         save_used = true;
         game.use_save(host_save);
     }
+}
+
+void netplay::answer_left(LeftChoice choice) {
+    left_choice = choice;
+    session_cv.notify_all();
 }
 
 bool netplay::detail::lobby_begin(const SessionSettings& settings) {

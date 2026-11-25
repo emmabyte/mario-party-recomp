@@ -3,6 +3,8 @@
 
 #include "netplay.h"
 
+#include <cstdlib>
+
 #include "recomp.h"
 
 void mp_netplay::init(const ultramodern::input::callbacks_t&, const std::string&) {}
@@ -16,6 +18,9 @@ bool mp_netplay::available() { return false; }
 void mp_netplay::set_online_config(recomp::config::Config*) {}
 void mp_netplay::open_online(std::function<bool()>, std::function<void()>) {}
 void mp_netplay::close_online() {}
+void mp_netplay::online_returned(const std::string&, const std::string&) {}
+bool mp_netplay::returning(std::string&, std::string&) { return false; }
+void mp_netplay::restart_to_menu(const std::string&, const char*) { std::_Exit(0); }
 bool netplay::connected_override(int, bool*) { return false; }
 void netplay::note_connected(int, bool) {}
 

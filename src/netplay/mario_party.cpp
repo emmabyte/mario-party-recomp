@@ -502,6 +502,52 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
         game.show_message = [](const char* title, const char* text) {
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, title, text, nullptr);
         };
+        // A party that ends goes back to Online Play, the lobby again when the host took everyone there, by starting
+        // the program again (restart.cpp); the tests keep ending the program instead.
+        game.back_to_menu = [](int, const char* text, const char* lobby) {
+            mp_netplay::restart_to_menu(text != nullptr ? text : "", lobby);
+        };
+        // The host's question when a guest leaves, over the game, which waits meanwhile. asking tells a close of the
+        // question (the guest came back) from the host's answer.
+        game.ask_left = [](int player, const char* name) {
+            static std::atomic<bool> asking{false};
+            if (player < 0) {
+                if (asking.exchange(false)) {
+                    recompui::close_prompt();
+                }
+                return;
+            }
+            asking = true;
+            std::string header = std::string(name) + " left the party";
+            recompui::open_choice_prompt(header,
+                "Everyone is waiting. If they come back, play goes on. Otherwise, let the computer play for them, or "
+                "take everyone back to the lobby.",
+                "Back to lobby", "Computer plays",
+                []() { if (asking.exchange(false)) netplay::answer_left(netplay::LeftChoice::Lobby); },
+                []() { if (asking.exchange(false)) netplay::answer_left(netplay::LeftChoice::Computer); },
+                recompui::ButtonStyle::Primary, recompui::ButtonStyle::Secondary, false);
+        };
+        game.show_notice = [](const char* text) {
+            if (text == nullptr || *text == '\0') {
+                recompui::close_prompt();
+            } else {
+                recompui::open_notification("Waiting for the host", text);
+            }
+        };
+    } else if (const char* choice = getenv("MP_NETPLAY_TEST_LEFT_CHOICE")) {
+        // For the tests: the host's answer when a guest leaves (computer or lobby), given at once, and the program
+        // ends where it would go back to the menu, saying so.
+        static bool lobby = strcmp(choice, "lobby") == 0;
+        game.ask_left = [](int player, const char*) {
+            if (player >= 0) {
+                netplay::answer_left(lobby ? netplay::LeftChoice::Lobby : netplay::LeftChoice::Computer);
+            }
+        };
+        game.back_to_menu = [](int code, const char* text, const char* to) {
+            fprintf(stderr, "[netplay] back to the menu (%d, %s, %s)\n", code, text, to != nullptr ? to : "menu");
+            fflush(stderr);
+            std::_Exit(0);
+        };
     }
     netplay::init(game, callbacks);
 }
