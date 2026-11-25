@@ -286,6 +286,16 @@ void widescreen_piranhas_trees(omObjData* object) {
     }
 }
 
+// Its obstacles, the hanging vines, the logs and the boulders, 25 laid along the track (func_800FB5D4_PiranhasPursuit),
+// are hidden by their frame function (func_800FBE00_PiranhasPursuit) while one is more than 1300 from the scroll, which
+// at 4:3 is just past the picture's edges, so a wider picture showed them appear and vanish inside it. us.toml's hook
+// gives that test this reach instead, the 1300 as many times longer as the picture is wider than 4:3: the view at the
+// obstacles' depth widens by that much on each side, the camera's aim behind the scroll with it, so they come and go
+// past the wider picture's edges, and at 4:3 the game's own 1300.
+f32 widescreen_piranhas_obstacle_reach(void) {
+    return 1300.0f * mp_aspect_ratio() * (3.0f / 4.0f);
+}
+
 // Limbo Dance (overlay 0x29)'s scenery along the course, the torches, the Toads, the bushes and the trees and ferns
 // behind them, is 35 props (D_800FF220_LimboDance, made in func_800FA418_LimboDance), each a form of its own, which
 // the game keeps within the course's scroll plus or minus 1050: each frame (func_800FB058_LimboDance's loop) it moves
@@ -584,4 +594,142 @@ s32 widescreen_blooper_gone(omObjData* blooper, s32 player, s32 past_4x3) {
     }
     D_800FC8A0_MushroomMixup &= ~(1 << player);
     return (D_800FC9A0_MushroomMixup != 0) || (blooper->trans.x >= edge) || (blooper->trans.x <= -edge);
+}
+
+// Skateboard Scamper (overlay 0x16)'s lava is one model, the camera's object's (file 0x280007, made in
+// func_800F8158_SkateBoardSkamper): a flat square 1500 wide on y 0, in 7 strips of one display list, that the game keeps
+// at x -600 and moves down the course with the players, its texture sliding. At 4:3 its edges are just past the
+// picture's; a wider picture showed black past them, the frame's clear: at the top left beside the start's ramp as
+// READY and GO show, and at the top right beyond its far corner as the players go on. The bridge, the start and the
+// goal are models of their own, and the lava's square is laid under them. us.toml's hook calls this once the setup has
+// made it: the square larger in x and z by 3 times what the picture is wider than 4:3 by (twice its size at 16:9, 5
+// times at 32:9), and its vertices' texture coordinates as many times further from their middle, so its lava keeps the
+// size it had as it reaches the wider picture's corners. The vertices are in each of the model's buffers (it repeats one in every
+// slot); a coordinate stays inside the 16 bits it is kept in, the square no larger than that allows. At 4:3 it keeps
+// its size.
+#define SKATE_LAVA_MORE 3.0f
+#define SKATE_LAVA_LIST_LONGEST 128
+#define CMD_VTX_SKATE 0x01u
+#define CMD_ENDDL_SKATE 0xDFu
+
+static f32 skate_lava_factor(void) {
+    return 1.0f + SKATE_LAVA_MORE * (mp_aspect_ratio() * (3.0f / 4.0f) - 1.0f);
+}
+
+// The number of vertices the model's lists draw from, the highest G_VTX's first and count.
+static s32 skate_lava_vertices(unk2C0C0StructC0* data) {
+    s32 most = 0;
+    s32 i;
+    s32 c;
+
+    for (i = 0; i < 8; i++) {
+        u32* list = (u32*)data->unk_00[i];
+
+        if (((u32)list >> 24) != 0x80) {
+            break;
+        }
+        for (c = 0; c < SKATE_LAVA_LIST_LONGEST && (list[c * 2] >> 24) != CMD_ENDDL_SKATE; c++) {
+            u32 w0 = list[c * 2];
+
+            if ((w0 >> 24) == CMD_VTX_SKATE) {
+                s32 last = (s32)((list[c * 2 + 1] & 0xFFFFFF) / sizeof(unk2C0C0StructE0)) + (s32)((w0 >> 12) & 0xFF);
+
+                if (last > most) {
+                    most = last;
+                }
+            }
+        }
+    }
+    return most;
+}
+
+void widescreen_skate_lava(omObjData* camera) {
+    unk_ovl_2D_struct* lava = &D_800F2B7C[camera->model[0]];
+    unk2C0C0StructC0* data = lava->unk_6C;
+    f32 k = skate_lava_factor();
+    s32 count;
+    s32 i;
+    s32 j;
+    s32 v;
+    s32 axis;
+
+    if (k <= 1.0f || data == NULL || data->unk_00 == NULL) {
+        return;
+    }
+    count = skate_lava_vertices(data);
+    // The texture coordinates' middles, and the most k can be with each still inside 16 bits.
+    for (i = 0; i < ARRAY_COUNT(data->unk_08); i++) {
+        unk2C0C0StructE0* buffer = data->unk_08[i];
+
+        if (buffer == NULL) {
+            continue;
+        }
+        for (axis = 0; axis < 2; axis++) {
+            s32 lo = 0x7FFF;
+            s32 hi = -0x8000;
+            f32 middle;
+            f32 half;
+
+            for (v = 0; v < count; v++) {
+                s16 st = axis == 0 ? buffer[v].unk_08 : buffer[v].unk_0A;
+
+                lo = st < lo ? st : lo;
+                hi = st > hi ? st : hi;
+            }
+            middle = (lo + hi) * 0.5f;
+            half = (hi - lo) * 0.5f;
+            if (half > 0.0f && (32767.0f - (middle < 0.0f ? -middle : middle)) / half < k) {
+                k = (32767.0f - (middle < 0.0f ? -middle : middle)) / half;
+            }
+        }
+    }
+    if (k <= 1.0f) {
+        return;
+    }
+    for (i = 0; i < ARRAY_COUNT(data->unk_08); i++) {
+        unk2C0C0StructE0* buffer = data->unk_08[i];
+
+        if (buffer == NULL) {
+            continue;
+        }
+        for (j = 0; j < i; j++) {
+            if (data->unk_08[j] == buffer) {
+                break;
+            }
+        }
+        if (j < i) {
+            continue;
+        }
+        for (axis = 0; axis < 2; axis++) {
+            s32 lo = 0x7FFF;
+            s32 hi = -0x8000;
+            f32 middle;
+
+            for (v = 0; v < count; v++) {
+                s16 st = axis == 0 ? buffer[v].unk_08 : buffer[v].unk_0A;
+
+                lo = st < lo ? st : lo;
+                hi = st > hi ? st : hi;
+            }
+            middle = (lo + hi) * 0.5f;
+            for (v = 0; v < count; v++) {
+                s16* st = axis == 0 ? &buffer[v].unk_08 : &buffer[v].unk_0A;
+
+                *st = (s16)(s32)(middle + (*st - middle) * k);
+            }
+        }
+    }
+    // The game sets the model's scale from its object's each frame.
+    camera->scale.x *= k;
+    camera->scale.z *= k;
+    lava->unk_3C *= k;
+    lava->unk_44 *= k;
+}
+
+// Its goal, the gate the course ends at, is shown (func_800FA3B4_SkateBoardSkamper) once the course's scroll is within
+// 3000 of it, which at 4:3 is past the picture's top; a wider picture saw its posts appear inside its top right.
+// us.toml's hook gives that test this reach instead, the 3000 as many times longer as the lava is larger (6000 at
+// 16:9), and the game's own 3000 at 4:3.
+f32 widescreen_skate_goal_reach(void) {
+    return 3000.0f * skate_lava_factor();
 }

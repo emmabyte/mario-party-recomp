@@ -120,6 +120,16 @@ func = "func_800FDBB4_BashNCash"
 before_vram = 0x800FDEAC
 text = "{ void mp_hud_side_sprites(uint8_t*, gpr, int32_t, gpr, gpr, int32_t); mp_hud_side_sprites(rdram, (gpr)(int32_t)0x800FE5D8, 20, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800ED60C), (gpr)(int32_t)0x800EE330, 0xC); }"
 
+# Bobsled Run's progress bar between its two views over the window (lib/mario-party-engine/src/hud.cpp says how): the
+# function that makes it (func_800FA96C_BobsledRun) makes its tiles, basic sprites at y 0x70 from x 8 to 4:3's right
+# edge, keeping each one's index in turn in an s16 at 0x800FFAD4, and its finish post's in the next, which it holds at
+# its end (after its last call, before it restores ra). The racers' icons (y 0x5A and 0x5E), the flag (0x60) and the
+# start's marks (0x68 and 0x6C) are over it, on the screen's rows 0x58 up to the bottom view's top, 0x80.
+[[patches.hook]]
+func = "func_800FA96C_BobsledRun"
+before_vram = 0x800FAD4C
+text = "{ void mp_hud_bar(uint8_t*, gpr, int32_t, gpr, gpr, int32_t, int32_t, int32_t); mp_hud_bar(rdram, (gpr)(int32_t)0x800FFAD4, 2, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800ED60C), (gpr)(int32_t)0x800EE330, 0xC, 0x58, 0x80); }"
+
 # A screen wipe past 4:3 (lib/mario-party-engine/src/wipe.cpp says how): the wipe module's whole-screen rectangle
 # (func_800728F4(gfx, alpha), out through 0x800729C0), and a shape wipe (func_8007420C(gfx, size, alpha)): its size, a
 # float in a1, made larger as it starts for a picture wider than 4:3, and, with gfx in t0, its draws (from 0x80074250,
@@ -167,8 +177,8 @@ text = "{ gpr mp_wipe_picture_sides(uint8_t*, gpr); ctx->r2 = mp_wipe_picture_si
 # says how): where its setup has loaded the cloud (func_800F6B14_MinigameInstructions, its form's index in v0, just
 # back from LoadFormFile), where the cloud's grow and turn are over (L_800F6CFC, with or without the cloud), and in
 # each of func_800247FC's three walks of the forms, where it has loaded a form's flags (s0 the form; v0, v0 and v1 the
-# flags) and is about to test their 0x4. The same three walks hide a Coin Block Blitz form scaled past 20 times
-# (src/game/coin_block_blitz.cpp says why).
+# flags) and is about to test their 0x4. The same three walks hide a Bash 'n' Cash or Coin Block Blitz form scaled
+# past 20 times (src/game/huge_forms.cpp says why).
 [[patches.hook]]
 func = "func_800F6B14_MinigameInstructions"
 before_vram = 0x800F6B7C
@@ -182,17 +192,17 @@ text = "{ void mp_instructions_cloud_end(uint8_t*); mp_instructions_cloud_end(rd
 [[patches.hook]]
 func = "func_800247FC"
 before_vram = 0x800248CC
-text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_coin_block_blitz_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_coin_block_blitz_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r2, ctx->r16), ctx->r16); }"
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_huge_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_huge_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r2, ctx->r16), ctx->r16); }"
 
 [[patches.hook]]
 func = "func_800247FC"
 before_vram = 0x80024BF8
-text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_coin_block_blitz_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_coin_block_blitz_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r2, ctx->r16), ctx->r16); }"
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_huge_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_huge_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r2, ctx->r16), ctx->r16); }"
 
 [[patches.hook]]
 func = "func_800247FC"
 before_vram = 0x80025228
-text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_coin_block_blitz_form_flags(uint8_t*, gpr, gpr); ctx->r3 = mp_coin_block_blitz_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r3, ctx->r16), ctx->r16); }"
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_huge_form_flags(uint8_t*, gpr, gpr); ctx->r3 = mp_huge_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r3, ctx->r16), ctx->r16); }"
 
 # A minigame's instructions screen past 4:3 (patches/instructions.c says how): after its setup has placed and scaled
 # each of the two strips of cloud along the bottom (form 0xB000A, then 0xB000B, each in s0), a copy of it on each side.
@@ -232,6 +242,14 @@ text = "{ void widescreen_piranhas_trees_copied(uint8_t*, recomp_context*); ctx-
 func = "func_800FAEE8_PiranhasPursuit"
 before_vram = 0x800FB030
 text = "{ void widescreen_piranhas_trees(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_trees(rdram, ctx); }"
+
+# Piranha's Pursuit's obstacles shown out to a wide picture's edges (patches/widescreen.c,
+# widescreen_piranhas_obstacle_reach): their frame function, as it compares an obstacle's distance from the scroll (f0)
+# with the 1300 past which it hides it (f2). The game's registers are kept around the call.
+[[patches.hook]]
+func = "func_800FBE00_PiranhasPursuit"
+before_vram = 0x800FC0D4
+text = "{ void widescreen_piranhas_obstacle_reach(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_piranhas_obstacle_reach(rdram, ctx); float reach = ctx->f0.fl; *ctx = saved; ctx->f2.fl = reach; }"
 
 # Limbo Dance's scenery copied a ring's width away (patches/widescreen.c, widescreen_limbo_scenery): its sprite list's
 # setup, asked for 9 more places as it starts (the length in a0) and with them marked used once it has made them; the
@@ -373,6 +391,32 @@ func = "func_800F87A0_PlatformPeril"
 before_vram = 0x800F8ACC
 text = "{ void widescreen_platform_parked(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; widescreen_platform_parked(rdram, ctx); *ctx = saved; }"
 
+# Bobsled Run's whole course in both views. The course is six section models, and each frame func_800FCB44 draws a
+# section in a view (its camera's byte for it, camera->unk_50[section]: 2 drawn, 1 not; and the model's camera mask)
+# only while that view's player is inside the section's stretch of the course (0 to 1 from start to finish: 0-1.7,
+# 0-0.05, 0-0.3, 0.25-0.72, 0.67-1.2, 0.8-1.2), so the cave and the walls past it came in all at once as a sled reached
+# 0.25 or 0.67, with the sky's dark blue where they were to be at the views' sides and top. Each section is taken as
+# inside for both players instead: the loop's test (v0, both bounds) is made true before it branches on it.
+[[patches.hook]]
+func = "func_800FCB44_BobsledRun"
+before_vram = 0x800FCC28
+text = "ctx->r2 = 1;"
+
+# Skateboard Scamper's lava as large as a wide picture needs (patches/widescreen.c, widescreen_skate_lava): the end of
+# its camera's setup, which made the lava's model and placed it, with the object in s0. The game's registers are kept
+# around the call.
+[[patches.hook]]
+func = "func_800F8158_SkateBoardSkamper"
+before_vram = 0x800F82F8
+text = "{ void widescreen_skate_lava(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r16; widescreen_skate_lava(rdram, ctx); *ctx = saved; }"
+
+# Skateboard Scamper's goal shown from as far as a wide picture sees it (patches/widescreen.c,
+# widescreen_skate_goal_reach): the goal's frame function, as it adds the 3000 (f2) to the goal's z before it compares
+# the sum with the scroll.
+[[patches.hook]]
+func = "func_800FA3B4_SkateBoardSkamper"
+before_vram = 0x800FA400
+text = "{ void widescreen_skate_goal_reach(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_skate_goal_reach(rdram, ctx); float reach = ctx->f0.fl; *ctx = saved; ctx->f2.fl = reach; }"
 # A board's characters and props hidden once off the screen (patches/widescreen.c, widescreen_board_shown): in
 # func_8003DE60, after func_8004B730 has written the one's place on the screen at sp + 0x10, before the test loads its X.
 # The game's registers are kept around the call.
