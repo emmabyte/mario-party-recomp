@@ -1,5 +1,7 @@
-// The Unlocks option (src/game/config.cpp): with All, everything the game has a player earn is open: TODO. The save
-// keeps what the player has earned, so back on Original the game is as they left it.
+// The Unlocks option (src/game/config.cpp): with All, everything the game has a player earn is open: every board,
+// Bowser's Magma Mountain and Eternal Star too, every mini-game in the Mini-Game House, everything the Mushroom Shop
+// sells once (in the Bank to pick from) and the Mini-Game House's and Option House's extras. The save keeps what the
+// player has earned, so back on Original the game is as they left it.
 //
 // The game keeps what is earned in GwCommon (common_structs.h), the first part of its save, and reads it there from
 // code that is still the decomp's asm (the Mini-Game House, the board select, the shop), so the option sets those bits
@@ -41,11 +43,33 @@ static s32 forcing = 0;
 
 static void forced_init(void) {
     static s32 done = 0;
+    s32 i;
     if (done) {
         return;
     }
     done = 1;
-    // TODO: the set.
+    // Every mini-game the game has known (mgUnlock: seen, so Woody sells it) and owned (mgBuy: playable in the
+    // Mini-Game House), the 50 the shop sells and the 3 the game gives (Mini-Game Island's two, Bumper Ball Maze's):
+    // ids 1-56 are bits 0-55, of which 1, 0x25 and 0x30 (ids 2, 0x26 and 0x31) are in no list.
+    static const u8 games[7] = { 0xFD, 0xFF, 0xFF, 0xFF, 0xDF, 0xFF, 0xFE };
+    for (i = 0; i < 7; i++) {
+        forced.mgUnlock[i] = games[i];
+        forced.mgBuy[i] = games[i];
+    }
+    // Flag 3: Eternal Star has come (100 stars, with Magma Mountain cleared). Flag 4, its scene to show, stays the
+    // game's, which shows it at the Bank and then puts Eternal Star on the records screen.
+    forced.flag[0x03 / 8] |= 1 << (0x03 % 8);
+    // 0x11-0x18: each board cleared, DK's Jungle Adventure to Eternal Star. Board select keeps its cursor on Eternal
+    // Star until it is cleared (0x18), and Eternal Star needs Magma Mountain cleared (0x17).
+    // 0x19-0x1E, 0x20, 0x21, 0x24, 0x25, 0x28: the shop's one-time items (what the Bank then lets a player pick).
+    // 0x1F: the Mini-Game House's third option. 0x22, 0x23: the Option House's extra two. 0x26: every mini-game
+    // bought. 0x27: Bowser's Magma Mountain.
+    for (i = 0x11; i <= 0x28; i++) {
+        forced.flag[i / 8] |= 1 << (i % 8);
+    }
+    // Magma Mountain and Eternal Star on the records screen, as buying the one and the other's scene put them.
+    forced.boardRecord[6][0] = 0x8000;
+    forced.boardRecord[7][0] = 0x8000;
 }
 
 static u8* bytes(GWCOMMON* common) {
@@ -189,6 +213,29 @@ RECOMP_PATCH void SetBoardFeatureFlag(s32 flag) {
     GwCommon.flag[flag / 8] |= (1 << flag % 8);
     // @recomp
     earned.flag[flag / 8] |= (1 << flag % 8);
+}
+
+RECOMP_PATCH void func_8005963C(s16 index, u16 param_2) {
+    u16 *ptr;
+
+    ptr = (u16 *)func_80059520(index);
+    *ptr |= param_2 & 0xFC00;
+    // @recomp
+    bytes(&earned)[(u8*)ptr - bytes(&GwCommon)] |= (param_2 & 0xFC00) >> 8;
+}
+
+RECOMP_PATCH void func_80059678(s16 index, u16 param_2) {
+    u16 *ptr;
+    s32 at;
+
+    ptr = (u16 *)func_80059520(index);
+    *ptr &= ~(param_2 & 0xFC00);
+    // @recomp A forced bit stays set while the option sets it.
+    at = (u8*)ptr - bytes(&GwCommon);
+    bytes(&earned)[at] &= ~((param_2 & 0xFC00) >> 8);
+    if (forcing) {
+        bytes(&GwCommon)[at] |= bytes(&forced)[at];
+    }
 }
 
 RECOMP_PATCH void ClearBoardFeatureFlag(s32 flag) {

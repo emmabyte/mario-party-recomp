@@ -51,8 +51,9 @@ void marioparty::init_config() {
         "Unlocks",
         "What is open to play, whatever your save has earned."
         "<br/>"
-        "<b>All:</b> TODO. "
-        "Your save keeps what you have earned, and is as you left it back on Original. "
+        "<b>All:</b> every board (Bowser's Magma Mountain and Eternal Star too), every mini-game in the Mini-Game "
+        "House, everything the Mushroom Shop sells once, and the Mini-Game House's and Option House's extras, from "
+        "the next screen on. Your save keeps only what you have earned, so back on Original it is as you left it. "
         "<b>Original:</b> as on the console, earned by playing.",
         unlocks_options,
         Unlocks::Original
