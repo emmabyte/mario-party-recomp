@@ -96,7 +96,7 @@ namespace netplay {
         // there as real time passes (message queues, threads), and the display lists still being drawn, which go with
         // what those are doing now and not with the snapshot's. Optional.
         void (*live_ranges)(const uint8_t* rdram, std::vector<Range>& out) = nullptr;
-        // Once such a snapshot is taken up, with the live ranges put back. Optional.
+        // Once a snapshot is taken up (in the middle of play, with the live ranges put back; or whole). Optional.
         void (*after_take_up)(uint8_t* rdram) = nullptr;
         // Once a snapshot is taken up for players who rejoined (a bit for each port): the game gives each back to its
         // player, from the computer that played it while they were gone (Frame's left). Optional.

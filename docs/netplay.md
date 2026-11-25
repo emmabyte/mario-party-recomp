@@ -113,7 +113,12 @@ zstd-compressed, about 400 KB, in pieces it asks for), and after that frame ever
 game, with a "Resyncing" notice over it meanwhile. Taking it up mid-play first ends the threads of the processes the
 save hasn't started (lib/mario-party-engine's `mp_prc_end`) and keeps what the hash leaves out as it is, the system
 threads' queues and stacks, which go with what those threads are doing now; the graphics' message ring
-(`gMesgRingBuffer`) comes from the save, left out of the hash, since the copy's own froze the game. The players go back
+(`gMesgRingBuffer`) comes from the save, left out of the hash, since the copy's own froze the game. So does the sound
+(its driver's data, its heap, its thread's stack and queues, all but its OSThread), stepped a frame at a time and idle
+between frames: a scene waits for its sound to stop before it changes, and with the copy's own sound kept, a resync from
+the board back to a minigame's results waited for the board's music to stop, for good. A board's background loader's
+two threads are ended first and started again where the save has them waiting (`before_take_up`, `after_take_up`, the
+latter after every take-up). The players go back
 to the start of the scene; a session that can't (no save, or eight resyncs) ends as before. A session's record isn't
 replayable past a resync. `MP_NETPLAY_TEST_SEND_SAVE` on a guest has the host send its save whatever the guest has, for
 the tests. `tools/netplay_rdram_diff.py` names what differs between the two copies' files by symbol, and replaying each

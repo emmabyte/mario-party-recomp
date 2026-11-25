@@ -113,14 +113,20 @@ namespace {
     // What the game state leaves out: RDRAM the runtime and the game's system threads write as real time passes, which two
     // runs of the same inputs never share and the game's logic never reads back. Found by diffing RDRAM between a
     // recording and its replay (tools/netplay_rdram_diff.py) and named by the decomp's symbols.
+    // The sound's, in excluded, which a take-up in the middle of play takes from the save all the same (live_ranges).
+    constexpr uint32_t SOUND_DRIVER = 0x800CD9C0;      // the sound driver's data
+    constexpr uint32_t AUDIO_HEAP = 0x802E0000;        // the audio heap
+    constexpr uint32_t SOUND_THREAD_AREA = 0x800CEB00; // the sound driver's thread's stack, OSThread and queues
+    constexpr uint32_t SOUND_THREAD = 0x800D0B30;      // its OSThread, which stays this copy's
+    constexpr uint32_t OSTHREAD_SIZE = 0x1B0;
     constexpr Range excluded[] = {
         { 0x800C42B0, 0x800C42B4 }, // D_800C42B0: the main loop's count of frames queued to draw
         { 0x800CD650, 0x800CD9B0 }, // gInitThread, gMainThread: OSThreads, which hold the runtime's own pointers
         // The sound driver's own data (src/B980.c, which nothing else names): its message queue from the game to the
-        // audio thread, the players and their state, which the audio thread changes as real time passes. Only the
-        // Options House's sound test reads any of it back (func_8000B198), to wait for a sound to finish.
+        // audio thread, the players and their state, which the audio thread changes as real time passes. func_8000B198
+        // reads it back to wait for a sound to finish: the Options House's sound test, and omMain before a new scene.
         { 0x800CD9C0, 0x800CEB00 },
-        { 0x800CEB00, 0x800D10E8 }, // a thread's stack, the scheduler's thread, its queues and its task ring
+        { 0x800CEB00, 0x800D10E8 }, // the sound driver's thread: its stack, OSThread (0x800D0B30), queues, task ring
         { 0x800D1D20, 0x800D5ED0 }, // swapChainThread and swapChainStack (src/engine/graphics.c)
         { 0x800D5ED0, 0x800D5FE8 }, // swapChainTask, gSwapChainMesgQueue, gMesgQueue and their messages
         { 0x800D6BA8, 0x800D6D58 }, // the OSThreads of threads 0x65 and 0x64 (src/48D90.c), which hold the runtime's
@@ -441,6 +447,7 @@ bool mp_netplay::fixed_aspect() {
 
 static bool can_snapshot(const uint8_t* rdram);
 static void before_take_up(uint8_t* rdram);
+static void after_take_up(uint8_t* rdram);
 static void give_back(uint8_t* rdram, uint8_t ports);
 static void hold_screen(bool waiting);
 static std::vector<uint8_t> extra_state();
@@ -461,11 +468,25 @@ void mp_netplay::init(const ultramodern::input::callbacks_t& callbacks, const st
     };
     game.can_snapshot = can_snapshot;
     game.before_take_up = before_take_up;
+    game.after_take_up = after_take_up;
     game.give_back = give_back;
     game.hold_screen = hold_screen;
     game.live_ranges = [](const uint8_t*, std::vector<netplay::Range>& out) {
-        // What the hash leaves out (excluded): the system threads' and the runtime's, as real time passes.
-        out.assign(std::begin(excluded), std::end(excluded));
+        // What the hash leaves out (excluded): the system threads' and the runtime's, as real time passes. But not the
+        // sound's: its driver's data, its heap and its thread's stack and queues go with the save, all but the thread's
+        // OSThread. The sound steps a frame at a time with the game (step_audio) and its thread waits at the top of its
+        // loop between frames, so at a frame's start they are whole; and a scene waits for its sound to stop before it
+        // changes (omMain asks func_8000B198), which only the save's own sound does. Kept as they were, the board's music
+        // played on after a resync back to a minigame's results, and the game waited for it to stop for good: a black
+        // screen. Without the thread's own stack and queues with them, the sound's next task was garbage.
+        out.clear();
+        for (const netplay::Range& r : excluded) {
+            if (r.start == SOUND_THREAD_AREA) {
+                out.push_back({ SOUND_THREAD, SOUND_THREAD + OSTHREAD_SIZE });
+            } else if (r.start != SOUND_DRIVER && r.start != AUDIO_HEAP) {
+                out.push_back(r);
+            }
+        }
     };
     game.show_resync = [](bool shown) {
         // Over the game, which waits meanwhile: the save on its way, and the game going back to it.
@@ -761,11 +782,63 @@ static bool can_snapshot(const uint8_t* rdram) {
 // Before a resync takes up a party save in the middle of play: ends the thread of every process that has started but
 // the three the game keeps (whose loops stand where the save's do), so that the save's processes, none of which had
 // started, start afresh from RDRAM at their next resume (lib/mario-party-engine's mp_prc_end).
+// A board's background loader's two threads (src/48D90.c, patches/background.c's func_8004A41C) live from a board's
+// start to its end, natively, each idle in an osRecvMesg on its queue, which lists it as waiting (blocked_on_recv).
+// A save has them or not as its scene did, and a copy taking it up has them or not as its own scene does: a resync from
+// a minigame's results back to the save made as they began, with the board's loader running again since, lost the
+// threads from their queues (the save's list no one waiting) and the board never came back: a black screen for good.
+// So a take-up ends this copy's threads first (before_take_up, in the middle of play) and starts them afresh where the
+// save has them waiting (after_take_up, every take-up), on the same function and stack as the game, where they wait at
+// once on the save's queues.
+namespace {
+    struct LoaderThread {
+        uint32_t thread, id, entry, stack, queue, priority;
+    };
+    constexpr LoaderThread loader_threads[] = {
+        { 0x800D7560, 0x64, 0x8004A394, 0x800D7F20, 0x800D7F20, 1 }, // decompresses (its priority D_800D7710's)
+        { 0x800D6BA8, 0x65, 0x8004A31C, 0x800D7560, 0x800D6AF0, 4 }, // reads from the ROM
+    };
+    constexpr uint32_t LOADER_PRIORITY = 0x800D7710; // D_800D7710: the priority func_8004A530 gives the first
+
+    bool has_context(const uint8_t* rdram, uint32_t thread) {
+        uint64_t context;
+        memcpy(&context, rdram + (thread - 0x80000000u) + 0x20, sizeof(context));
+        return context != 0;
+    }
+}
+
 static void before_take_up(uint8_t* rdram) {
     for (uint32_t key : mp_prc_started()) {
         if (!is_kept_process(read_word(rdram, key + 0x30))) {
             mp_prc_end(key);
         }
+    }
+    for (const LoaderThread& t : loader_threads) {
+        if (has_context(rdram, t.thread)) {
+            osDestroyThread(rdram, (int32_t)t.thread);
+        }
+    }
+}
+
+static void after_take_up(uint8_t* rdram) {
+    for (const LoaderThread& t : loader_threads) {
+        uint8_t* context = rdram + (t.thread - 0x80000000u) + 0x20;
+        if (read_word(rdram, t.queue) != t.thread) {
+            // Not waiting in the save: none of this copy's own, nor the save's (another computer's pointer).
+            if (has_context(rdram, t.thread)) {
+                fprintf(stderr, "[netplay] the save's thread %X wasn't waiting for its loader's queue\n", t.id);
+            }
+            memset(context, 0, 8);
+            continue;
+        }
+        memset(context, 0, 8);
+        memset(rdram + (t.queue - 0x80000000u), 0, 4); // blocked_on_recv: the thread puts itself back
+        osCreateThread(rdram, (int32_t)t.thread, (OSId)t.id, (int32_t)t.entry, 0, (int32_t)t.stack, (OSPri)t.priority);
+        osStartThread(rdram, (int32_t)t.thread);
+        if (t.id == 0x64) {
+            osSetThreadPri(rdram, (int32_t)t.thread, (OSPri)read_word(rdram, LOADER_PRIORITY));
+        }
+        fprintf(stderr, "[netplay] the board's loader thread %X started again, as the save has it\n", t.id);
     }
 }
 

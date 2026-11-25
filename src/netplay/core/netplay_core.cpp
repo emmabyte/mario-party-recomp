@@ -837,6 +837,9 @@ Frame netplay::advance(uint8_t* rdram) {
             game.can_snapshot != nullptr && game.can_snapshot(rdram)) {
         restored = true;
         take_up(rdram, to_restore);
+        if (game.after_take_up != nullptr) {
+            game.after_take_up(rdram);
+        }
         to_restore = Snapshot{};
     }
     if (resume_pending && detail::current_mode == Mode::Session && frame_no >= 4 && game.can_snapshot != nullptr &&
@@ -844,6 +847,9 @@ Frame netplay::advance(uint8_t* rdram) {
         // A party the players resume: every copy is at the same session frame here, with the same game.
         resume_pending = false;
         take_up(rdram, to_resume);
+        if (game.after_take_up != nullptr) {
+            game.after_take_up(rdram);
+        }
         to_resume = Snapshot{};
         party_saved_frame = frame_no;
         char line[128];
@@ -861,6 +867,9 @@ Frame netplay::advance(uint8_t* rdram) {
         if (detail::join_wait() && detail::join_now(bytes, back) && snapshot_from_bytes(bytes, snap, head)) {
             party_id = head.id;
             take_up(rdram, snap);
+            if (game.after_take_up != nullptr) {
+                game.after_take_up(rdram);
+            }
             if (back != 0 && game.give_back != nullptr) {
                 game.give_back(rdram, back);
             }
