@@ -2,8 +2,8 @@
 # Builds the netplay server's release (src/netplay/server, dist/server/SERVER.txt): for Linux on x86-64 and on arm64
 # (a Raspberry Pi, an ARM VPS), each a .tar.gz beside the game's in out/, named as the game's release is with -server.
 # The server needs no ROM and holds nothing of the game, so it builds anywhere: a static binary, which runs on any Linux
-# of its CPU with nothing to install. Its version is the game's (src/main/main.cpp's version_string): a server and the
-# game join only when they're from the same release.
+# of its CPU with nothing to install. It is named after the game's release it ships with (src/main/main.cpp's
+# version_string); a game whose relay protocol (relay_protocol.h's VERSION) differs from the server's is turned away.
 #
 #     tools/release_server.sh            # both
 #     tools/release_server.sh x64        # out/MarioPartyRecompiled-v<version>-server-linux-x64.tar.gz

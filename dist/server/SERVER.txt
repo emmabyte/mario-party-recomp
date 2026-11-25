@@ -6,7 +6,8 @@ players can reach. It doesn't run the game and needs no ROM. It passes each play
 still runs the game on their own computer. It holds one party of 2 to 4 players. The first player to join it hosts
 that party (as if they'd chosen Host a Party) and everyone after joins it.
 
-Players need the same release of the game as the server: in the game, Online Play, Play on a Server, then the
+Players need a release of the game with Play on a Server, of the same relay version as the server (the server
+turns away one that isn't): in the game, Online Play, Play on a Server, then the
 server's address (a name like play.example.com or an IP address, with :port if it isn't 7845) and its password.
 
 Running it

@@ -110,7 +110,8 @@ forwarded. It knows nothing of the game and needs no ROM. Each copy still runs t
 server only relays: a guest's packets to the host, the host's to each guest, as they come. `relay_protocol.h` is what
 the two speak and `server.cpp`'s header how to run it; `dist/server/SERVER.txt` is the admin's how-to, shipped in its
 release with a systemd unit (`tools/release_server.sh` builds that release: a static binary for x86-64 and arm64,
-named after the game's release, whose version it carries; a copy of another version is turned away as it joins).
+named after the game's release it ships with; a copy that speaks another version of the relay protocol is turned away
+as it joins).
 
 A server holds one party. In Online Play's **Play on a Server** a player types the server's address and its password;
 the server takes them as the party's host if no one hosts yet, and as a guest otherwise, and the party opens as if
