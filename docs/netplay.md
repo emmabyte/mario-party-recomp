@@ -218,7 +218,9 @@ A snapshot is the game at a frame, for a copy to take up and play on from: RDRAM
 (16 MB), the overlays loaded, the EEPROM, and what of the game the runtime keeps natively (`mario_party.cpp`'s
 `extra_state`). It can be taken only where all of the game's state is in them: in the first frames of a scene, before
 any of its processes has started (`can_snapshot`), since a process that has run keeps its locals on a native thread's
-stack. Each thread's native context stays the taking copy's own. `MP_NETPLAY_SNAPSHOT=<n>` in a replay writes one at
+stack. Each thread's native context stays the taking copy's own: `take_up` finds the game's threads by their own
+fields (priority, id, state, queue links and stack in RDRAM), not by what the pointer looks like, since a snapshot
+can come from Windows, macOS or Linux, whose heaps lie at quite different addresses. `MP_NETPLAY_SNAPSHOT=<n>` in a replay writes one at
 frame n, and `MP_NETPLAY_RESTORE=<file>` in a replay of the same recording takes it up at the first frame it can (the
 fourth after power-on) and replays on from there: a 12,000-frame recording taken up at two of its hub's scenes played
 on to its end with every frame matching.

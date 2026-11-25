@@ -671,15 +671,25 @@ namespace {
         // have (the same priority and id, and a pointer there in both).
         const uint8_t* ram = snap.ram.data();
         auto word = [](const uint8_t* m, size_t at) { uint32_t w; memcpy(&w, m + at, 4); return w; };
-        auto host_pointer = [&](const uint8_t* m, size_t at) {
-            uint32_t hi = word(m, at + 4);
-            return hi >= 0x00005000u && hi < 0x00008000u;
+        // A thread is known by its own fields, never by what its pointer looks like, since a snapshot can come from any
+        // system (Linux's heap is at 0x55.. or 0x7f.., Windows' and macOS's far lower): a priority and an id under 256,
+        // one state (stopped, runnable, running or waiting), its queue links nil, -1 or in RDRAM, its stack in RDRAM, and an
+        // 8-byte-aligned 64-bit user-space pointer for its context.
+        auto in_rdram = [](uint32_t v) { return v >= 0x80000000u && v < 0x80800000u; };
+        auto link = [&](uint32_t v) { return v == 0 || v == 0xFFFFFFFFu || in_rdram(v); };
+        auto thread_at = [&](const uint8_t* m, size_t at) {
+            uint32_t state = word(m, at + 0x10);
+            auto one = [](uint32_t v) { return v == 1 || v == 2 || v == 4 || v == 8; };
+            uint32_t next = word(m, at), queue = word(m, at + 0x08), hi = word(m, at + 0x24);
+            return word(m, at + 0x04) < 256 && word(m, at + 0x14) < 256 && (one(state & 0xFFFFu) || one(state >> 16)) &&
+                link(next) && link(queue) && in_rdram(word(m, at + 0x28)) &&
+                hi >= 1u && hi < 0x00008000u && (word(m, at + 0x20) & 7u) == 0;
         };
         std::vector<std::pair<size_t, uint64_t>> keep;
-        for (size_t at = 0; at + 0x28 <= SNAP_SIZE; at += 8) {
+        for (size_t at = 0; at + 0x2C <= SNAP_SIZE; at += 8) {
             size_t context = at + 0x20;
-            if (host_pointer(rdram, context) && host_pointer(ram, context) && word(rdram, at + 0x14) == word(ram, at + 0x14) &&
-                    word(rdram, at + 0x04) == word(ram, at + 0x04) && word(rdram, at + 0x04) < 256) {
+            if (thread_at(rdram, at) && thread_at(ram, at) && word(rdram, at + 0x14) == word(ram, at + 0x14) &&
+                    word(rdram, at + 0x04) == word(ram, at + 0x04)) {
                 uint64_t v;
                 memcpy(&v, rdram + context, 8);
                 keep.emplace_back(context, v);
