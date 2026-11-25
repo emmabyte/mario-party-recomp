@@ -56,6 +56,9 @@ static void forced_init(void) {
         forced.mgUnlock[i] = games[i];
         forced.mgBuy[i] = games[i];
     }
+    // Flag 1: the First Map played. Until it is, Adventure plays the First Map (Toad's lesson) before any board can be
+    // picked.
+    forced.flag[0x01 / 8] |= 1 << (0x01 % 8);
     // Flag 3: Eternal Star has come (100 stars, with Magma Mountain cleared). Flag 4, its scene to show, stays the
     // game's, which shows it at the Bank and then puts Eternal Star on the records screen.
     forced.flag[0x03 / 8] |= 1 << (0x03 % 8);
