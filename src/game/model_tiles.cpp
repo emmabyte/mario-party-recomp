@@ -23,14 +23,18 @@
 //
 // So where a batch's vertex lies where one of another texture of the part does, each at its texture's opposite edges
 // (one's t at its last row's far edge, the other's at 0, their s the same, or the same across), the two textures meet
-// there, and along the span such vertices share, the two textures' texels either side of the join take about the colour
-// halfway between theirs, each from its own palette, for a CI8 texture with an RGBA16 one: the pair of the two palettes'
-// colours that meets best near halfway (two quarters' palettes may share nothing near it, one sky, the other leaves). The
-// two sides meet at one colour, or nearly, and the filter's step across the join is gone. Joined again (the picture made
-// again from the same textures), colours already meeting stay about where they are.
+// there, and along the span such vertices share, the step between the two textures' colours at the join is spread over
+// the SPREAD texels either side of it, 2 SPREAD + 1 even steps where there was one, each texel's new colour from its
+// own palette (a CI8 texture with an RGBA16 one). Two quarters' palettes may have nothing between their colours (one
+// sky, the other ground), so a colour a palette lacks takes a slot no texture of the part drawn with it uses, or, with
+// none free, one of the palette's two nearest colours, every texel of it moved to the other, if they are nearer each
+// other than the colour wanted is to any, or no more than a step apart in each channel: texels here and there a step off
+// show far less than a line across flat sky. The filter's hard step across the join is gone.
 
 #include "recomp.h"
 #include "librecomp/helpers.hpp"
+#include <cstdio>
+#include <algorithm>
 
 namespace {
     // The builder's globals (src/2C0C0.c).
@@ -86,8 +90,10 @@ namespace {
     struct Picture {
         gpr texture = 0, palette = 0;
         int32_t width = 0, height = 0;      // texels, a row width bytes
+        int32_t colours = 0;                // the palette's colours loaded, its first
     } picture;
     gpr picture_palette = 0;                // the last palette loaded
+    int32_t picture_colours = 0;            // and how many colours of it
     bool picture_rgba16 = false;            // the TLUT's format the part draws with
 
     // The part's batches drawn with a CI8 texture so far: each texture and its batch's vertices.
@@ -116,50 +122,153 @@ namespace {
         return (r0 - r1) * (r0 - r1) + (g0 - g1) * (g0 - g1) + (b0 - b1) * (b0 - b1);
     }
 
-    // Texels a and b (byte offsets in their textures) take a colour each from their own palettes, keeping their alpha
-    // bits: the pair that meets best across the join while staying near halfway between the two texels' colours. A
-    // palette may have nothing near halfway (one side sky, the other leaves), and then the pair meeting matters more
-    // than either side's nearness to it: the step between them counts twice the distance of each from halfway.
-    void even(uint8_t* rdram, const Picture& pa, int32_t a, const Picture& pb, int32_t b) {
-        uint32_t ca = MEM_HU(MEM_BU(a, pa.texture) * 2, pa.palette);
-        uint32_t cb = MEM_HU(MEM_BU(b, pb.texture) * 2, pb.palette);
-        int32_t ar, ag, ab, br, bg, bb;
-        rgba16_split(ca, ar, ag, ab);
-        rgba16_split(cb, br, bg, bb);
-        // Halfway, doubled to keep its half steps.
-        int32_t r = ar + br, g = ag + bg, bl = ab + bb;
-        int32_t best_a = -1, best_b = -1, best = 0;
-        for (int32_t i = 0; i < 256; i++) {
-            uint32_t c = MEM_HU(i * 2, pa.palette);
-            if ((c & 1) != (ca & 1)) {
+    // How many rows (columns, across a join down) either side of a join the step between two textures is spread over.
+    constexpr int32_t SPREAD = 2;
+
+    // A palette's slots that no texel of the part's textures drawn with it uses: a join takes one for a colour the
+    // palette lacks (two quarters' palettes may share nothing between their colours, one sky, the other ground).
+    struct Slots {
+        gpr palette = 0;
+        bool used[256] = {};
+        int32_t top = 255;      // its last slot: those past it are the next palette's
+        bool made[256] = {};    // given its colour by a join, so never merged away
+    };
+    constexpr int MAX_SLOTS = 16;
+    Slots slots[MAX_SLOTS];
+    int slots_count = 0;
+
+    void mark_used(uint8_t* rdram, Slots& s, const Picture& p) {
+        for (int32_t i = 0; i < p.width * p.height; i++) {
+            s.used[MEM_BU(i, p.texture)] = true;
+        }
+    }
+
+    // Every texel of index from in the part's textures drawn with p's palette (p's and also's among them) made to.
+    void remap(uint8_t* rdram, const Picture& p, const Picture& also, int32_t from, int32_t to) {
+        auto move = [&](const Picture& q) {
+            if (q.palette != p.palette) {
+                return;
+            }
+            for (int32_t i = 0; i < q.width * q.height; i++) {
+                if (MEM_BU(i, q.texture) == (uint32_t)from) {
+                    MEM_B(i, q.texture) = (int8_t)to;
+                }
+            }
+        };
+        for (int i = 0; i < piece_count; i++) {
+            move(pieces[i].picture);
+        }
+        move(p);
+        move(also);
+    }
+
+    // The palette's slots, the part's textures drawn with it read the first time a join asks; nullptr past MAX_SLOTS.
+    Slots* slots_for(uint8_t* rdram, const Picture& p, const Picture& also) {
+        for (int i = 0; i < slots_count; i++) {
+            if (slots[i].palette == p.palette) {
+                return &slots[i];
+            }
+        }
+        if (slots_count == MAX_SLOTS) {
+            return nullptr;
+        }
+        Slots& s = slots[slots_count++];
+        s = Slots();
+        s.palette = p.palette;
+        for (int i = 0; i < piece_count; i++) {
+            if (pieces[i].picture.palette == p.palette) {
+                mark_used(rdram, s, pieces[i].picture);
+            }
+        }
+        mark_used(rdram, s, p);
+        if (also.palette == p.palette) {
+            mark_used(rdram, s, also);
+        }
+        // A palette loaded as 256 colours may hold fewer, the next one's straight after it (Board Selection's are
+        // 160 to 208): only a slot under the last one its textures use is its own.
+        int32_t top = 255;
+        while (top > 0 && !s.used[top]) {
+            top--;
+        }
+        for (int32_t i = top + 1; i < 256; i++) {
+            s.used[i] = true;
+        }
+        s.top = top;
+        return &s;
+    }
+
+    // The index in p's palette for a colour (5 bits a channel) with alpha bit alpha: the nearest colour the texture
+    // draws with, or, if that is more than a step off in a channel, a slot given the colour itself (below).
+    int32_t diag_miss = 0, diag_miss_d = 0, diag_null = 0, diag_pair_d = 0;
+    int32_t colour_index(uint8_t* rdram, const Picture& p, const Picture& also, int32_t r, int32_t g, int32_t b,
+                         uint32_t alpha) {
+        Slots* s = slots_for(rdram, p, also);
+        int32_t best = -1, best_d = 0;
+        for (int32_t i = 0; i < p.colours; i++) {
+            uint32_t c = MEM_HU(i * 2, p.palette);
+            if ((s != nullptr && !s->used[i]) || (c & 1) != alpha) {
                 continue;
             }
             int32_t ir, ig, ib;
             rgba16_split(c, ir, ig, ib);
-            int32_t near_a = distance(ir * 2, ig * 2, ib * 2, r, g, bl);
-            if (best_a >= 0 && near_a >= best) {
-                continue;
-            }
-            for (int32_t k = 0; k < 256; k++) {
-                uint32_t d = MEM_HU(k * 2, pb.palette);
-                if ((d & 1) != (cb & 1)) {
-                    continue;
-                }
-                int32_t kr, kg, kb;
-                rgba16_split(d, kr, kg, kb);
-                int32_t cost = near_a + distance(kr * 2, kg * 2, kb * 2, r, g, bl) +
-                               2 * distance(ir * 2, ig * 2, ib * 2, kr * 2, kg * 2, kb * 2);
-                if (best_a < 0 || cost < best) {
-                    best_a = i;
-                    best_b = k;
-                    best = cost;
-                }
+            int32_t d = distance(ir, ig, ib, r, g, b);
+            if (best < 0 || d < best_d) {
+                best = i;
+                best_d = d;
             }
         }
-        if (best_a >= 0) {
-            MEM_B(a, pa.texture) = (int8_t)best_a;
-            MEM_B(b, pb.texture) = (int8_t)best_b;
+        if (s == nullptr || (best >= 0 && best_d <= 1)) {
+            if (best_d > 1) { diag_null++; } return best;
         }
+        int32_t slot = -1;
+        for (int32_t i = 0; i <= s->top && slot < 0; i++) {
+            if (!s->used[i]) {
+                slot = i;
+            }
+        }
+        if (slot < 0) {
+            // None free: the palette's two nearest colours made one, if they are nearer each other than the colour
+            // wanted is to the nearest it has, or no more than a step apart in each channel (scattered texels a step
+            // off show far less than a line a step or three off across flat sky), every
+            // texel of the part's textures drawn with it moved to the first. Colours a join made are kept.
+            int32_t keep = -1, drop = -1, pair_d = 0;
+            for (int32_t i = 0; i <= s->top; i++) {
+                uint32_t c = MEM_HU(i * 2, p.palette);
+                int32_t ir, ig, ib;
+                rgba16_split(c, ir, ig, ib);
+                for (int32_t k = i + 1; k <= s->top; k++) {
+                    uint32_t d = MEM_HU(k * 2, p.palette);
+                    if (s->made[k] || (c & 1) != (d & 1)) {
+                        continue;
+                    }
+                    int32_t kr, kg, kb;
+                    rgba16_split(d, kr, kg, kb);
+                    int32_t dd = distance(ir, ig, ib, kr, kg, kb);
+                    if (keep < 0 || dd < pair_d) {
+                        keep = i;
+                        drop = k;
+                        pair_d = dd;
+                    }
+                }
+            }
+            if (keep < 0 || (best >= 0 && pair_d >= best_d && pair_d > 3)) {
+                diag_miss++; diag_miss_d += best_d; diag_pair_d += pair_d; return best;
+            }
+            remap(rdram, p, also, drop, keep);
+            if (best == drop) {
+                best = keep;
+            }
+            slot = drop;
+        }
+        MEM_H(slot * 2, p.palette) = (int16_t)(uint16_t)((r << 11) | (g << 6) | (b << 1) | alpha);
+        s->used[slot] = true;
+        s->made[slot] = true;
+        return slot;
+    }
+
+    int32_t channel(float v) {
+        int32_t c = (int32_t)(v + (v < 0 ? -0.5f : 0.5f));
+        return std::max(0, std::min(31, c));
     }
 
     // Where piece p's vertices lie on q's at their opposite edges, the texels either side of that join evened, along
@@ -206,13 +315,56 @@ namespace {
         const Picture& b = (first == &p) ? q.picture : p.picture;
         int32_t length = std::min(across ? a.height : a.width, across ? b.height : b.width);
         int32_t from = std::max(low >> 5, 0), to = std::min((high + 31) >> 5, length);
+        int32_t depth = std::min({ SPREAD, (across ? a.width : a.height) / 2, (across ? b.width : b.height) / 2 });
+        int32_t changed = 0, step0 = 0, step1 = 0;
         for (int32_t x = from; x < to; x++) {
-            if (across) {
-                even(rdram, a, x * a.width + a.width - 1, b, x * b.width);
-            } else {
-                even(rdram, a, (a.height - 1) * a.width + x, b, x);
+            // Texel j in from the join on either side (0 at it), a byte offset in its texture.
+            auto at_a = [&](int32_t j) { return across ? x * a.width + a.width - 1 - j : (a.height - 1 - j) * a.width + x; };
+            auto at_b = [&](int32_t j) { return across ? x * b.width + j : j * b.width + x; };
+            uint32_t ia[SPREAD], ib[SPREAD];
+            for (int32_t j = 0; j < depth; j++) {
+                ia[j] = MEM_BU(at_a(j), a.texture);
+                ib[j] = MEM_BU(at_b(j), b.texture);
+            }
+            int32_t ar, ag, ab, br, bg, bb;
+            rgba16_split(MEM_HU(ia[0] * 2, a.palette), ar, ag, ab);
+            rgba16_split(MEM_HU(ib[0] * 2, b.palette), br, bg, bb);
+            step0 += distance(ar, ag, ab, br, bg, bb);
+            // The step across the join spread over the texels either side: the one at it moves depth / (2 depth + 1)
+            // of the step toward the other side, the next one less, so the colours climb in 2 depth + 1 even steps.
+            float dr = (float)(br - ar), dg = (float)(bg - ag), db = (float)(bb - ab);
+            for (int32_t j = 0; j < depth; j++) {
+                float f = (float)(depth - j) / (float)(2 * depth + 1);
+                uint32_t ca = MEM_HU(ia[j] * 2, a.palette), cb = MEM_HU(ib[j] * 2, b.palette);
+                int32_t r, g, bl;
+                rgba16_split(ca, r, g, bl);
+                int32_t na = colour_index(rdram, a, b, channel(r + dr * f), channel(g + dg * f), channel(bl + db * f), ca & 1);
+                rgba16_split(cb, r, g, bl);
+                int32_t nb = colour_index(rdram, b, a, channel(r - dr * f), channel(g - dg * f), channel(bl - db * f), cb & 1);
+                if (na >= 0) {
+                    MEM_B(at_a(j), a.texture) = (int8_t)na;
+                }
+                if (nb >= 0) {
+                    MEM_B(at_b(j), b.texture) = (int8_t)nb;
+                }
+                changed += ((uint32_t)na != ia[j]) + ((uint32_t)nb != ib[j]);
+            }
+            rgba16_split(MEM_HU(MEM_BU(at_a(0), a.texture) * 2, a.palette), ar, ag, ab);
+            rgba16_split(MEM_HU(MEM_BU(at_b(0), b.texture) * 2, b.palette), br, bg, bb);
+            step1 += distance(ar, ag, ab, br, bg, bb);
+        }
+        int32_t free_a = 0, free_b = 0;
+        for (int i = 0; i < slots_count; i++) {
+            for (int k = 0; k < 256; k++) {
+                if (!slots[i].used[k]) {
+                    free_a += slots[i].palette == a.palette;
+                    free_b += slots[i].palette == b.palette;
+                }
             }
         }
+        printf("SEAMDIAG join %08X/%08X onto %08X/%08X across %d span %d..%d texels %d..%d changed %d step %d -> %d free %d %d miss %d d %d pair %d null %d\n",
+               (uint32_t)a.texture, (uint32_t)a.palette, (uint32_t)b.texture, (uint32_t)b.palette, across, low, high, from, to, changed, step0, step1, free_a, free_b, diag_miss, diag_miss_d, diag_pair_d, diag_null); diag_miss = diag_miss_d = diag_null = diag_pair_d = 0;
+        fflush(stdout);
     }
 
     // A batch's commands read for its CI8 texture: the palette it loads, its TLUT's format and its render tile.
@@ -224,6 +376,7 @@ namespace {
                 image = (gpr)(int32_t)w1;
             } else if ((w0 >> 24) == G_LOADTLUT) {
                 picture_palette = image;
+                picture_colours = std::min((int32_t)((w1 >> 14) & 0x3FF) + 1, 256);
             } else if (w0 == G_SETOTHERMODE_H_TEXTLUT) {
                 picture_rgba16 = (w1 == G_TT_RGBA16);
             }
@@ -245,6 +398,7 @@ namespace {
         }
         picture.texture = (gpr)(int32_t)MEM_W(0, TEXTURE);
         picture.palette = picture_palette;
+        picture.colours = picture_colours;
         picture.width = width;
         picture.height = height;
     }
@@ -293,6 +447,7 @@ extern "C" void mp_model_batch_end(uint8_t* rdram) {
         int32_t first = MEM_H(0, BATCH_FIRST), last = MEM_H(0, BATCH_END);
         if (first == 0 || vs != pieces_vertices) {
             piece_count = 0;
+            slots_count = 0;
             pieces_vertices = vs;
             if (settilesize == 0) {
                 picture = Picture();
@@ -302,10 +457,16 @@ extern "C" void mp_model_batch_end(uint8_t* rdram) {
         if (picture.texture != 0 && in_rdram(picture.texture, picture.width * picture.height) &&
             in_rdram(picture.palette, 512) && last > first && piece_count < MAX_PIECES) {
             Piece piece{ picture, first, last };
+            printf("SEAMDIAG piece colours %d %08X pal %08X %dx%d verts %d..%d vs %08X n %d\n", picture.colours, (uint32_t)picture.texture, (uint32_t)picture.palette, picture.width, picture.height, first, last, (uint32_t)vs, piece_count);
             for (int i = 0; i < piece_count; i++) {
                 if (pieces[i].picture.texture != piece.picture.texture) {
                     join(rdram, vs, piece, pieces[i], false);
                     join(rdram, vs, piece, pieces[i], true);
+                }
+            }
+            for (int i = 0; i < slots_count; i++) {
+                if (slots[i].palette == piece.picture.palette) {
+                    mark_used(rdram, slots[i], piece.picture);
                 }
             }
             pieces[piece_count++] = piece;
