@@ -30,6 +30,11 @@
 // none free, one of the palette's two nearest colours (never one a join made), every texel of it moved to the other, if
 // they are nearer each other than the colour wanted is to any, or no more than a step apart in each channel: texels
 // here and there a step off show far less than a line across flat sky. The filter's hard step across the join is gone.
+//
+// The quarters are lit, and not alike: the builder sets the directional light's colour (G_MW_LIGHTCOL) B2B2B2 for
+// each picture's first quarter and FFFFFF for its bottom right one, which draws brighter than the quarter above it,
+// a line across the picture's right half that the console draws too. So a batch of a later picture of the part, where
+// it meets one before it, has its light colours set as the part's first picture's were, and every quarter is lit alike.
 
 #include "recomp.h"
 #include "librecomp/helpers.hpp"
@@ -105,6 +110,12 @@ namespace {
     Piece pieces[MAX_PIECES];
     int piece_count = 0;
     gpr pieces_vertices = 0;
+
+    // The light colours the part's first picture was lit with, by the moveword's offset (a word each).
+    constexpr uint32_t G_MOVEWORD_LIGHTCOL = 0xDB0A;    // G_MOVEWORD, G_MW_LIGHTCOL (F3DEX2)
+    constexpr int LIGHT_WORDS = 32;
+    bool light_known[LIGHT_WORDS] = {};
+    uint32_t light_colour[LIGHT_WORDS] = {};
 
     // Whether a texture or palette of n bytes lies in RDRAM (a KSEG0 address, not a segment one).
     bool in_rdram(gpr address, int32_t n) {
@@ -272,8 +283,8 @@ namespace {
 
     // Where piece p's vertices lie on q's at their opposite edges, the texels either side of that join evened, along
     // the span the shared vertices cover. Down (across false): p's last row on q's first, or q's last on p's first;
-    // across: the same for columns.
-    void join(uint8_t* rdram, gpr vertices, const Piece& p, const Piece& q, bool across) {
+    // across: the same for columns. Whether the two meet.
+    bool join(uint8_t* rdram, gpr vertices, const Piece& p, const Piece& q, bool across) {
         // Which of the two is first (above, or to the left), and the span along the join (10.5), from either's
         // shared vertices.
         const Piece* first = nullptr;
@@ -308,7 +319,7 @@ namespace {
             }
         }
         if (first == nullptr || high <= low) {
-            return;
+            return false;
         }
         const Picture& a = first->picture;
         const Picture& b = (first == &p) ? q.picture : p.picture;
@@ -344,6 +355,25 @@ namespace {
                 if (nb >= 0) {
                     MEM_B(at_b(j), b.texture) = (int8_t)nb;
                 }
+            }
+        }
+        return true;
+    }
+
+    // A batch's light colours (G_MW_LIGHTCOL movewords, each word by its offset): the part's first picture's recorded,
+    // or a later picture's that meets one before it made those, so every quarter of the picture is lit alike.
+    void light_like_first(uint8_t* rdram, gpr start, gpr end, bool record) {
+        for (gpr cmd = start; cmd < end; cmd += 8) {
+            uint32_t w0 = (uint32_t)MEM_W(0, cmd);
+            int32_t word = (int32_t)(w0 & 0xFFFF) / 4;
+            if ((w0 >> 16) != G_MOVEWORD_LIGHTCOL || (w0 & 3) != 0 || word >= LIGHT_WORDS) {
+                continue;
+            }
+            if (record) {
+                light_known[word] = true;
+                light_colour[word] = (uint32_t)MEM_W(4, cmd);
+            } else if (light_known[word]) {
+                MEM_W(4, cmd) = (int32_t)light_colour[word];
             }
         }
     }
@@ -430,6 +460,7 @@ extern "C" void mp_model_batch_end(uint8_t* rdram) {
             piece_count = 0;
             slots_count = 0;
             pieces_vertices = vs;
+            std::fill(std::begin(light_known), std::end(light_known), false);
             if (settilesize == 0) {
                 picture = Picture();
             }
@@ -438,11 +469,15 @@ extern "C" void mp_model_batch_end(uint8_t* rdram) {
         if (picture.texture != 0 && in_rdram(picture.texture, picture.width * picture.height) &&
             in_rdram(picture.palette, 512) && last > first && piece_count < MAX_PIECES) {
             Piece piece{ picture, first, last };
+            bool meets = false;
             for (int i = 0; i < piece_count; i++) {
                 if (pieces[i].picture.texture != piece.picture.texture) {
-                    join(rdram, vs, piece, pieces[i], false);
-                    join(rdram, vs, piece, pieces[i], true);
+                    meets |= join(rdram, vs, piece, pieces[i], false);
+                    meets |= join(rdram, vs, piece, pieces[i], true);
                 }
+            }
+            if (piece_count == 0 || meets) {
+                light_like_first(rdram, batch_start, end, piece_count == 0);
             }
             for (int i = 0; i < slots_count; i++) {
                 if (slots[i].palette == piece.picture.palette) {
