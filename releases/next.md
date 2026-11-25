@@ -1,0 +1,1 @@
+- On the Board Selection screen, each board's preview picture is now one smooth picture. Before, a line ran across its middle, sharp in a big window, and its bottom-right quarter was drawn brighter than the rest.
