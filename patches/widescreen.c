@@ -294,7 +294,7 @@ void widescreen_piranhas_trees(omObjData* object) {
 // obstacles' depth widens by that much on each side, the camera's aim behind the scroll with it, so they come and go
 // past the wider picture's edges, and at 4:3 the game's own 1300.
 f32 widescreen_piranhas_obstacle_reach(void) {
-    return 1300.0f * mp_aspect_ratio() * (3.0f / 4.0f);
+    return 1300.0f * mp_play_aspect_ratio() * (3.0f / 4.0f);
 }
 
 // Limbo Dance (overlay 0x29)'s scenery along the course, the torches, the Toads, the bushes and the trees and ferns
@@ -578,7 +578,7 @@ void widescreen_platform_parked(omObjData* platform) {
 // edges, so it is hidden 50 units past the window's, and at 4:3 left where it was. Not past the middle, which the test
 // never hides.
 void widescreen_board_shown(f32* screen) {
-    f32 past = 120.0f * mp_aspect_ratio() - 160.0f;
+    f32 past = 120.0f * mp_play_aspect_ratio() - 160.0f;
 
     if (past <= 0.0f) {
         return;
@@ -603,7 +603,7 @@ extern u16 D_800FC8A0_MushroomMixup;
 extern u16 D_800FC9A0_MushroomMixup;
 
 s32 widescreen_blooper_gone(omObjData* blooper, s32 player, s32 past_4x3) {
-    f32 edge = 1000.0f * mp_aspect_ratio() * (3.0f / 4.0f);
+    f32 edge = 1000.0f * mp_play_aspect_ratio() * (3.0f / 4.0f);
 
     if (!past_4x3) {
         return 0;
@@ -629,7 +629,7 @@ s32 widescreen_blooper_gone(omObjData* blooper, s32 player, s32 past_4x3) {
 #define CMD_ENDDL_SKATE 0xDFu
 
 static f32 skate_lava_factor(void) {
-    return 1.0f + SKATE_LAVA_MORE * (mp_aspect_ratio() * (3.0f / 4.0f) - 1.0f);
+    return 1.0f + SKATE_LAVA_MORE * (mp_play_aspect_ratio() * (3.0f / 4.0f) - 1.0f);
 }
 
 // The number of vertices the model's lists draw from, the highest G_VTX's first and count.

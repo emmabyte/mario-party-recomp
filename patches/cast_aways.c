@@ -48,11 +48,12 @@ RECOMP_PATCH void func_800F71AC_CastAways(omObjData* arg0) {
 // two below) and a new item's x, just after the spawner sets it. At 4:3 both are the game's own. Each row keeps its
 // cap and spawn timer, so a row fills to its cap a little more often as its items stay on screen a little longer.
 
-f32 mp_aspect_ratio(void);
+// The picture's shape the game plays by (src/game/recomp_api.cpp): 16:9 during netplay, whatever the window.
+f32 mp_play_aspect_ratio(void);
 
 // How far a side of the picture is past 4:3's, in 4:3's 320 wide: 0 at 4:3, whose aspect in a float is a hair over.
 static f32 cast_aways_wider(void) {
-    f32 wider = 120.0f * mp_aspect_ratio() - 160.0f;
+    f32 wider = 120.0f * mp_play_aspect_ratio() - 160.0f;
 
     return (wider > 0.01f) ? wider : 0.0f;
 }
