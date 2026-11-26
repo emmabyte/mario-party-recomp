@@ -120,6 +120,15 @@ set(RECOMPINPUT_PADS_IN_ORDER ON)
 # to the window's, between frames at 4:3. RT64_SCISSOR_INSIDE_FRAMEBUFFER, on with Emscripten and here too, counts it
 # only to the frame's edges.
 set(RT64_SCISSOR_INSIDE_FRAMEBUFFER ON)
+# A texrect the game moves is paired with its own in the game frame before and drawn between where it stood and where
+# it is in the frames between, as with Emscripten (RT64_INTERPOLATE_RECT_SCROLLS): without it the glove that points
+# at a choice in Mushroom Village's houses, one 24-pixel rect, slid to its place a game frame at a time, 30 steps a
+# second, while the room turned to it at the display's rate.
+set(RT64_INTERPOLATE_RECT_SCROLLS ON)
+# A decal passes within the RDP's depth tolerance of the surface under it (RT64_RDP_DECAL_TOLERANCE), 2 to 4 times its
+# depth's slope where RT64 passes 1: Coin Block Blitz puts its ? blocks' square shadows a little above the ground, 1.1
+# to 4 times its slope, and RT64 drew none of them but half of one.
+set(RT64_RDP_DECAL_TOLERANCE ON)
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/rt64 ${CMAKE_BINARY_DIR}/rt64)
 
 set(BUILD_SHARED_LIBS OFF)
@@ -252,6 +261,9 @@ target_sources(MarioPartyRecompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/mario-party-engine/src/model_ids.cpp
     ${CMAKE_SOURCE_DIR}/src/game/recomp_api.cpp
     ${CMAKE_SOURCE_DIR}/src/game/survey.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/instructions.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/model_tiles.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/huge_forms.cpp
 )
 
 # Netplay (docs/netplay.md): its game-agnostic core (src/netplay/core) and Mario Party's side of it. Off, the hooks

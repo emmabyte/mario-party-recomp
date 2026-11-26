@@ -205,18 +205,64 @@ text = "{ void mp_hud_reset(uint8_t*); mp_hud_reset(rdram); }"
 [[patches.hook]]
 func = "func_80068410"
 before_vram = 0x80068410
-text = "{ void mp_hud_sprite_width(uint8_t*, float); void mp_hud_sprite_start(uint8_t*, gpr, gpr); gpr s = ctx->r5; gpr data = (gpr)(int32_t)MEM_W(0x4C, s); if (data != 0) { gpr frame = (gpr)(int32_t)MEM_W(0x0, data) + MEM_H(0x52, s) * 12; union { uint32_t u; float f; } scale; scale.u = (uint32_t)MEM_W(0x14, s); mp_hud_sprite_width(rdram, MEM_HU(0x4, frame) * scale.f); } mp_hud_sprite_start(rdram, ctx->r4, ctx->r5); }"
+text = "{ void mp_hud_sprite_width(uint8_t*, float); void mp_hud_sprite_start(uint8_t*, gpr, gpr); gpr s = ctx->r5; gpr data = (gpr)(int32_t)MEM_W(0x4C, s); if (data != 0) { gpr frame = (gpr)(int32_t)MEM_W(0x0, data) + MEM_H(0x52, s) * 12; union { uint32_t u; float f; } scale; scale.u = (uint32_t)MEM_W(0x14, s); mp_hud_sprite_width(rdram, MEM_HU(0x4, frame) * scale.f); } mp_hud_sprite_start(rdram, ctx->r4, ctx->r5); void mp_hud_sprite_reach(uint8_t*, gpr, gpr, int32_t); union { uint32_t u; float f; } turn; turn.u = (uint32_t)MEM_W(0x1C, s); uint32_t attr = (uint32_t)MEM_W(0x20, s); mp_hud_sprite_reach(rdram, ctx->r4, s + 4, (turn.f == 0.0f) && ((attr & 0xC0000) == 0) && ((attr & 0x30000) != 0x30000)); }"
+
+[[patches.hook]]
+func = "func_80068410"
+before_vram = 0x80068870
+text = "{ float mp_hud_sprite_left(uint8_t*); float mp_hud_sprite_right(uint8_t*); union { uint32_t u; float f; } right, left; right.u = (uint32_t)ctx->r18; left.u = (uint32_t)ctx->r19; right.f -= mp_hud_sprite_left(rdram); left.f -= mp_hud_sprite_right(rdram) - 320.0f; ctx->r18 = (int32_t)right.u; ctx->r19 = (int32_t)left.u; }"
 
 [[patches.hook]]
 func = "func_80068410"
 before_vram = 0x80069358
 text = "{ void mp_hud_sprite_end(uint8_t*, gpr); mp_hud_sprite_end(rdram, ctx->r21); }"
 
+# The game's big messages' letters out to the window's edges (lib/mario-party-engine/src/hud.cpp says how): the group
+# its message module makes for a message's letters (GMesFontCreate, 0x800767B4, has the group's index in v0 once it
+# stores it at 0x80076860), and in each sprite drawn, its x (an s16 at 0x4) and whether func_80068410 draws it as
+# texture rectangles (no turn, the float at 0x1C, and none of its flags at 0x20 for a matrix: 0xC0000, or both of
+# 0x30000), and where it drops a sprite wholly off the screen: the right of its corners in s2 and their left in s3,
+# floats, before it tests them against 0 and 320 (from 0x80068870).
+[[patches.hook]]
+func = "GMesFontCreate"
+before_vram = 0x80076864
+text = "{ void mp_hud_message_group(uint8_t*, gpr, int32_t); mp_hud_message_group(rdram, (gpr)(int32_t)MEM_W((int16_t)ctx->r2 * 4, (gpr)(int32_t)0x800EE330), 0xC); }"
+
+# A minigame's corner HUD at the window's sides (lib/mario-party-engine/src/hud.cpp says how): Grab Bag, Crane Game and
+# Bash 'n' Cash each make their four players' names, coin icons and coins' digits as basic sprites at 4:3's corners, at
+# the end of the function that makes them (after its last call, before it restores ra), and keep their indexes, s16s,
+# in one run of 20: the twelve digits (three a player), then the four names, then the four coin icons. The basic
+# sprites are at the pointer at 0x800ED60C.
+[[patches.hook]]
+func = "func_800FA8F4_GrabBag"
+before_vram = 0x800FABE8
+text = "{ void mp_hud_side_sprites(uint8_t*, gpr, int32_t, gpr, gpr, int32_t); mp_hud_side_sprites(rdram, (gpr)(int32_t)0x800FB258, 20, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800ED60C), (gpr)(int32_t)0x800EE330, 0xC); }"
+
+[[patches.hook]]
+func = "func_800FB08C_CraneGame"
+before_vram = 0x800FB384
+text = "{ void mp_hud_side_sprites(uint8_t*, gpr, int32_t, gpr, gpr, int32_t); mp_hud_side_sprites(rdram, (gpr)(int32_t)0x800FFE90, 20, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800ED60C), (gpr)(int32_t)0x800EE330, 0xC); }"
+
+[[patches.hook]]
+func = "func_800FDBB4_BashNCash"
+before_vram = 0x800FDEAC
+text = "{ void mp_hud_side_sprites(uint8_t*, gpr, int32_t, gpr, gpr, int32_t); mp_hud_side_sprites(rdram, (gpr)(int32_t)0x800FE5D8, 20, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800ED60C), (gpr)(int32_t)0x800EE330, 0xC); }"
+
+# Bobsled Run's progress bar between its two views over the window (lib/mario-party-engine/src/hud.cpp says how): the
+# function that makes it (func_800FA96C_BobsledRun) makes its tiles, basic sprites at y 0x70 from x 8 to 4:3's right
+# edge, keeping each one's index in turn in an s16 at 0x800FFAD4, and its finish post's in the next, which it holds at
+# its end (after its last call, before it restores ra). The racers' icons (y 0x5A and 0x5E), the flag (0x60) and the
+# start's marks (0x68 and 0x6C) are over it, on the screen's rows 0x58 up to the bottom view's top, 0x80.
+[[patches.hook]]
+func = "func_800FA96C_BobsledRun"
+before_vram = 0x800FAD4C
+text = "{ void mp_hud_bar(uint8_t*, gpr, int32_t, gpr, gpr, int32_t, int32_t, int32_t); mp_hud_bar(rdram, (gpr)(int32_t)0x800FFAD4, 2, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800ED60C), (gpr)(int32_t)0x800EE330, 0xC, 0x58, 0x80); }"
+
 # A screen wipe past 4:3 (lib/mario-party-engine/src/wipe.cpp says how): the wipe module's whole-screen rectangle
-# (func_800728F4(gfx, alpha), out through 0x800729C0), and a shape wipe (func_8007420C, with gfx in t0): its draws
-# (from 0x80074250, past its whole-screen rectangle for a closed shape, to its end at 0x80074C14) and its rectangles
-# around its square (from 0x80074A9C, where it has set their colour, with the square's left and right edges in t3 and
-# t4).
+# (func_800728F4(gfx, alpha), out through 0x800729C0), and a shape wipe (func_8007420C(gfx, size, alpha)): its size, a
+# float in a1, made larger as it starts for a picture wider than 4:3, and, with gfx in t0, its draws (from 0x80074250,
+# past its whole-screen rectangle for a closed shape, to its end at 0x80074C14) and its rectangles around its square
+# (from 0x80074A9C, where it has set their colour, with the square's left and right edges in t3 and t4).
 [[patches.hook]]
 func = "func_800728F4"
 before_vram = 0x800728F4
@@ -226,6 +272,11 @@ text = "{ void mp_wipe_fill_start(uint8_t*, gpr); mp_wipe_fill_start(rdram, ctx-
 func = "func_800728F4"
 before_vram = 0x800729C0
 text = "{ void mp_wipe_fill_end(uint8_t*, gpr); mp_wipe_fill_end(rdram, ctx->r4); }"
+
+[[patches.hook]]
+func = "func_8007420C"
+before_vram = 0x8007420C
+text = "{ gpr mp_wipe_shape_scale(uint8_t*, gpr); ctx->r5 = mp_wipe_shape_scale(rdram, ctx->r5); }"
 
 [[patches.hook]]
 func = "func_8007420C"
@@ -250,8 +301,52 @@ func = "func_800247FC"
 before_vram = 0x80025350
 text = "{ gpr mp_wipe_picture_sides(uint8_t*, gpr); ctx->r2 = mp_wipe_picture_sides(rdram, ctx->r2); }"
 
+# A minigame's instructions screen's other forms hidden while its cloud grows out of black (src/game/instructions.cpp
+# says how): where its setup has loaded the cloud (func_800F6B14_MinigameInstructions, its form's index in v0, just
+# back from LoadFormFile), where the cloud's grow and turn are over (L_800F6CFC, with or without the cloud), and in
+# each of func_800247FC's three walks of the forms, where it has loaded a form's flags (s0 the form; v0, v0 and v1 the
+# flags) and is about to test their 0x4. The same three walks hide a Bash 'n' Cash or Coin Block Blitz form scaled
+# past 20 times (src/game/huge_forms.cpp says why).
+[[patches.hook]]
+func = "func_800F6B14_MinigameInstructions"
+before_vram = 0x800F6B7C
+text = "{ void mp_instructions_cloud(uint8_t*, gpr); mp_instructions_cloud(rdram, ctx->r2); }"
+
+[[patches.hook]]
+func = "func_800F6B14_MinigameInstructions"
+before_vram = 0x800F6CFC
+text = "{ void mp_instructions_cloud_end(uint8_t*); mp_instructions_cloud_end(rdram); }"
+
+[[patches.hook]]
+func = "func_800247FC"
+before_vram = 0x800248CC
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_huge_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_huge_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r2, ctx->r16), ctx->r16); }"
+
+[[patches.hook]]
+func = "func_800247FC"
+before_vram = 0x80024BF8
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_huge_form_flags(uint8_t*, gpr, gpr); ctx->r2 = mp_huge_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r2, ctx->r16), ctx->r16); }"
+
+[[patches.hook]]
+func = "func_800247FC"
+before_vram = 0x80025228
+text = "{ gpr mp_instructions_form_flags(uint8_t*, gpr, gpr); gpr mp_huge_form_flags(uint8_t*, gpr, gpr); ctx->r3 = mp_huge_form_flags(rdram, mp_instructions_form_flags(rdram, ctx->r3, ctx->r16), ctx->r16); }"
+
 # A minigame's instructions screen past 4:3 (patches/instructions.c says how): after its setup has placed and scaled
 # each of the two strips of cloud along the bottom (form 0xB000A, then 0xB000B, each in s0), a copy of it on each side.
+# A minigame's instructions screen's soft cloud behind its title (form file 0xB0004) fades out before its triangles'
+# flat bottom edges (src/game/model_tiles.cpp says why): its setup makes it in LoadFormFile(0xB0004, 0x289), from the
+# jal (which L_800F6F28 reaches either way) to the instruction after its delay slot.
+[[patches.hook]]
+func = "func_800F6B14_MinigameInstructions"
+before_vram = 0x800F6F2C
+text = "{ void mp_model_title_cloud(uint8_t*, int32_t); mp_model_title_cloud(rdram, 1); }"
+
+[[patches.hook]]
+func = "func_800F6B14_MinigameInstructions"
+before_vram = 0x800F6F34
+text = "{ void mp_model_title_cloud(uint8_t*, int32_t); mp_model_title_cloud(rdram, 0); }"
+
 [[patches.hook]]
 func = "func_800F6B14_MinigameInstructions"
 before_vram = 0x800F6DFC
@@ -264,10 +359,17 @@ text = "{ void instructions_clouds_beside(uint8_t*, recomp_context*); ctx->r4 = 
 
 # Piranha's Pursuit's ground as wide as the picture (patches/widescreen.c, widescreen_piranhas_ground): its object's
 # frame function, with the object in s3, just before it reads the object's x scale to slide the ground's texture.
+# The slide, the scroll in f4 that it divides, is then zeroed: the ground is moved instead, as the frame function
+# returns (widescreen_piranhas_ground_placed), before s3 is given back.
 [[patches.hook]]
 func = "func_800FAEE8_PiranhasPursuit"
 before_vram = 0x800FAF48
-text = "{ void widescreen_piranhas_ground(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_ground(rdram, ctx); }"
+text = "{ void widescreen_piranhas_ground(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_ground(rdram, ctx); ctx->f4.d = 0.0; }"
+
+[[patches.hook]]
+func = "func_800FAEE8_PiranhasPursuit"
+before_vram = 0x800FB560
+text = "{ void widescreen_piranhas_ground_placed(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_ground_placed(rdram, ctx); }"
 
 # Piranha's Pursuit's trees and bushes copied a ring's width to either side (patches/widescreen.c,
 # widescreen_piranhas_trees): its setup, with the object in s3, once it has made the 14, and its object's frame
@@ -281,6 +383,50 @@ text = "{ void widescreen_piranhas_trees_copied(uint8_t*, recomp_context*); ctx-
 func = "func_800FAEE8_PiranhasPursuit"
 before_vram = 0x800FB030
 text = "{ void widescreen_piranhas_trees(uint8_t*, recomp_context*); ctx->r4 = ctx->r19; widescreen_piranhas_trees(rdram, ctx); }"
+
+# Piranha's Pursuit's obstacles shown out to a wide picture's edges (patches/widescreen.c,
+# widescreen_piranhas_obstacle_reach): their frame function, as it compares an obstacle's distance from the scroll (f0)
+# with the 1300 past which it hides it (f2). The game's registers are kept around the call.
+[[patches.hook]]
+func = "func_800FBE00_PiranhasPursuit"
+before_vram = 0x800FC0D4
+text = "{ void widescreen_piranhas_obstacle_reach(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_piranhas_obstacle_reach(rdram, ctx); float reach = ctx->f0.fl; *ctx = saved; ctx->f2.fl = reach; }"
+
+# Limbo Dance's scenery copied a ring's width away (patches/widescreen.c, widescreen_limbo_scenery): its sprite list's
+# setup, asked for 9 more places as it starts (the length in a0) and with them marked used once it has made them; the
+# setup once it has made the props, as it returns; the frame function once its loop has moved those that fell behind;
+# and the end of a sprite, which turns away a copy's (a0, -1 for none) so its torch's lists aren't freed twice.
+[[patches.hook]]
+func = "func_800FB93C_LimboDance"
+before_vram = 0x800FB93C
+text = "{ void widescreen_limbo_sprites(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_sprites(rdram, ctx); saved.r4 = ctx->r2; *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800FB93C_LimboDance"
+before_vram = 0x800FBAD4
+text = "{ void widescreen_limbo_sprites_made(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_sprites_made(rdram, ctx); *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800FA418_LimboDance"
+before_vram = 0x800FB004
+text = "{ void widescreen_limbo_scenery_copied(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_scenery_copied(rdram, ctx); *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800FB058_LimboDance"
+before_vram = 0x800FB250
+text = "{ void widescreen_limbo_scenery(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_scenery(rdram, ctx); *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800FDE38_LimboDance"
+before_vram = 0x800FDE38
+text = "{ void widescreen_limbo_sprite_freed(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_limbo_sprite_freed(rdram, ctx); saved.r4 = ctx->r2; *ctx = saved; }"
+
+# Musical Mushroom's floor carried on past its edges with copies of it (patches/widescreen.c, widescreen_musical_floor):
+# its stage object's setup, with the object in s3, once it has made the floor and is about to return.
+[[patches.hook]]
+func = "func_800F9D70_MusicalMushroom"
+before_vram = 0x800F9EDC
+text = "{ void widescreen_musical_floor(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r19; widescreen_musical_floor(rdram, ctx); *ctx = saved; }"
 
 # The seas and fields widened in x as they are made (patches/widescreen.c, widen_object and widen_model): each setup once
 # its stage is made, with its model's index in v0 or its object in s1. The game's registers are kept around the
@@ -299,6 +445,30 @@ text = "{ void widescreen_bumper_sea(uint8_t*, recomp_context*); recomp_context 
 func = "func_800FA454_MushroomMixup"
 before_vram = 0x800FA4E4
 text = "{ void widescreen_mushroom_sea(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r17; widescreen_mushroom_sea(rdram, ctx); *ctx = saved; }"
+
+# Mushroom Mixup's Bloopers hidden past the picture's edge rather than 4:3's (patches/widescreen.c,
+# widescreen_blooper_gone): the Blooper's frame function, the object in s2 and its player in s3, where both of its
+# measures of x against 1000 or -1000 meet with v1 1 if past it, before it reads v1 to hide the two. v1 is given the
+# patch's answer and the game's other registers are kept.
+[[patches.hook]]
+func = "func_800FB238_MushroomMixup"
+before_vram = 0x800FB9E8
+text = "{ void widescreen_blooper_gone(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; ctx->r5 = ctx->r19; ctx->r6 = ctx->r3; widescreen_blooper_gone(rdram, ctx); saved.r3 = ctx->r2; *ctx = saved; }"
+
+# Paddle Battle's river: its four water sections moved so their edges meet (patches/paddle_battle.c), once its setup
+# (func_800FBC00_PaddleBattle) has placed the last, with its object in s2. The game's registers are kept around the call.
+[[patches.hook]]
+func = "func_800FBC00_PaddleBattle"
+before_vram = 0x800FBE14
+text = "{ void paddle_battle_river_joined(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; paddle_battle_river_joined(rdram, ctx); *ctx = saved; }"
+
+# Paddle Battle's shafts of sunlight softened at their edges and ends (patches/paddle_battle.c, paddle_battle_shaft):
+# func_800FC39C_PaddleBattle, which makes each of the eight, once func_800174C0 has loaded its model (file 0x120007),
+# the model's index in v0. The game's registers are kept around the call, made between two of its instructions.
+[[patches.hook]]
+func = "func_800FC39C_PaddleBattle"
+before_vram = 0x800FC3CC
+text = "{ void paddle_battle_shaft(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r2; paddle_battle_shaft(rdram, ctx); *ctx = saved; }"
 
 # Board Movement and Map Scrolling (lib/mario-party-engine/src/board_options.cpp), Original by default.
 # Fast board movement: func_8004D6FC(player, speed) walks a player to the next space at a speed, 19.0 (0x41980000, in
@@ -348,3 +518,85 @@ text = "{ gpr mp_model_push(uint8_t*, gpr, int32_t, gpr, int32_t, gpr, int32_t);
 func = "func_8002D614"
 before_vram = 0x8002DA80
 text = "{ void mp_model_pop(uint8_t*, gpr); mp_model_pop(rdram, (gpr)(int32_t)0x800F37DC); }"
+
+# Platform Peril's fallen platforms hidden once parked (patches/widescreen.c, widescreen_platform_parked): the end of
+# each of its platforms' two frame functions, with the platform's object in s2. The game's registers are kept around
+# the call, which is made between two of its instructions.
+[[patches.hook]]
+func = "func_800F8220_PlatformPeril"
+before_vram = 0x800F8784
+text = "{ void widescreen_platform_parked(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; widescreen_platform_parked(rdram, ctx); *ctx = saved; }"
+
+[[patches.hook]]
+func = "func_800F87A0_PlatformPeril"
+before_vram = 0x800F8ACC
+text = "{ void widescreen_platform_parked(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r18; widescreen_platform_parked(rdram, ctx); *ctx = saved; }"
+
+# Bobsled Run's whole course in both views. The course is six section models, and each frame func_800FCB44 draws a
+# section in a view (its camera's byte for it, camera->unk_50[section]: 2 drawn, 1 not; and the model's camera mask)
+# only while that view's player is inside the section's stretch of the course (0 to 1 from start to finish: 0-1.7,
+# 0-0.05, 0-0.3, 0.25-0.72, 0.67-1.2, 0.8-1.2), so the cave and the walls past it came in all at once as a sled reached
+# 0.25 or 0.67, with the sky's dark blue where they were to be at the views' sides and top. Each section is taken as
+# inside for both players instead: the loop's test (v0, both bounds) is made true before it branches on it.
+[[patches.hook]]
+func = "func_800FCB44_BobsledRun"
+before_vram = 0x800FCC28
+text = "ctx->r2 = 1;"
+
+# Skateboard Scamper's lava as large as a wide picture needs (patches/widescreen.c, widescreen_skate_lava): the end of
+# its camera's setup, which made the lava's model and placed it, with the object in s0. The game's registers are kept
+# around the call.
+[[patches.hook]]
+func = "func_800F8158_SkateBoardSkamper"
+before_vram = 0x800F82F8
+text = "{ void widescreen_skate_lava(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r16; widescreen_skate_lava(rdram, ctx); *ctx = saved; }"
+
+# Skateboard Scamper's goal shown from as far as a wide picture sees it (patches/widescreen.c,
+# widescreen_skate_goal_reach): the goal's frame function, as it adds the 3000 (f2) to the goal's z before it compares
+# the sum with the scroll.
+[[patches.hook]]
+func = "func_800FA3B4_SkateBoardSkamper"
+before_vram = 0x800FA400
+text = "{ void widescreen_skate_goal_reach(uint8_t*, recomp_context*); recomp_context saved = *ctx; widescreen_skate_goal_reach(rdram, ctx); float reach = ctx->f0.fl; *ctx = saved; ctx->f2.fl = reach; }"
+# A board's characters and props hidden once off the screen (patches/widescreen.c, widescreen_board_shown): in
+# func_8003DE60, after func_8004B730 has written the one's place on the screen at sp + 0x10, before the test loads its X.
+# The game's registers are kept around the call.
+[[patches.hook]]
+func = "func_8003DE60"
+before_vram = 0x8003DF2C
+text = "{ void widescreen_board_shown(uint8_t*, recomp_context*); recomp_context saved = *ctx; ctx->r4 = ctx->r29 + 0x10; widescreen_board_shown(rdram, ctx); *ctx = saved; }"
+
+# A 3D model's texture clamped where its triangles' part of it ends (src/game/model_tiles.cpp says why): Crazy Cutter's
+# cones, barricades and poles had a thin dark line under them above the console's resolution, a row of the picture
+# under theirs in their texture's sheet. And where a part's textures meet, their texels at the join are evened, so
+# Board Selection's board pictures, four textures each, show no line across them. func_8002E488 writes a batch of a
+# model part's triangles as the model is made, after the texture they are drawn with if it is another, the batch's
+# vertices made already (src/2C0C0.c): at its start and before its last store (0x80030D1C, D_800EE32C still the
+# batch's first vertex).
+[[patches.hook]]
+func = "func_8002E488"
+before_vram = 0x8002E488
+text = "{ void mp_model_batch_start(uint8_t*); mp_model_batch_start(rdram); }"
+
+[[patches.hook]]
+func = "func_8002E488"
+before_vram = 0x80030D1C
+text = "{ void mp_model_batch_end(uint8_t*); mp_model_batch_end(rdram); }"
+
+# Cast Aways' coins, bags and chests appear and vanish past the window's edges, not 4:3's (patches/cast_aways.c):
+# the item's frame function's bounds, in f0 as it compares the item's screen x in f2 (340 moving right, -20 moving
+# left), and a new item's x, once the spawner has set the item (s2) and its work (s3), before it counts it.
+[[patches.hook]]
+func = "func_800F7A38_CastAways"
+before_vram = 0x800F7E4C
+text = "{ void cast_aways_item_gone_right(uint8_t*, recomp_context*); recomp_context c = *ctx; cast_aways_item_gone_right(rdram, &c); ctx->f0.fl = c.f0.fl; }"
+
+[[patches.hook]]
+func = "func_800F7A38_CastAways"
+before_vram = 0x800F7E68
+text = "{ void cast_aways_item_gone_left(uint8_t*, recomp_context*); recomp_context c = *ctx; cast_aways_item_gone_left(rdram, &c); ctx->f0.fl = c.f0.fl; }"
+
+[[patches.hook]]
+func = "func_800F76B8_CastAways"
+before_vram = 0x800F79BC
+text = "{ void cast_aways_item_spawned(uint8_t*, recomp_context*); recomp_context c = *ctx; c.r4 = ctx->r18; c.r5 = ctx->r19; cast_aways_item_spawned(rdram, &c); }"

@@ -69,24 +69,33 @@ This repo is the game: its recompilation, the patches over it, the desktop build
 -  **Drawing.** RT64 interpolates the game's 30 frames a second to the display's rate (a board's camera pans by an even
   step at every present). The game's display lists have no tags of their own: `us.toml`'s hooks in the model walk and
   the draw of its queues tag each 3D model's parts with an ID of their own, through lib/mario-party-engine's
-  `src/model_ids.cpp`, and RT64 pairs whatever else the game draws by itself. The game draws a frame in several RSP
-  tasks, one a camera (`func_8002D614`), some of them empty, which RT64 interpolates as one game frame with
-  RT64_GAME_FRAME_WORKLOADS, on with Emscripten and in `CMakeLists.txt` on the desktop too. It draws a picture wider
-  than 4:3 with Aspect Ratio Expand: `patches/widescreen.c` takes a camera's view to the window's edges and
-  `patches/background.c` a board's background, through lib/mario-party-engine's `camera_view.c` and `board_back.c`
-  (their headers say how), and `us.toml`'s hooks in the sprite manager the board's HUD, the players' panels, to its left
-  and right edges, and a picture as wide as the screen stretched over the window wherever the game puts it (kept to 4:3
-  in a scene the game draws at 4:3), through lib/mario-party-engine's `src/hud.cpp`, and its hooks in the wipe module
-  draw a wipe's colour (an iris's black, a fade) to them too, through its `src/wipe.cpp`; on a minigame's instructions
-  screen `patches/instructions.c` carries its strips of cloud on past 4:3 with a copy of each on either side, and in
-  Piranha's Pursuit `patches/widescreen.c` widens the ground, one mesh only a little wider than 4:3's view, and copies
-  its trees and bushes a ring's width to each side of the 3000 the game keeps them in. The board's camera stops where
-  the wider picture reaches the map's edge (`patches/background.c`, with the engine's `src/aspect_ratio.cpp`). A map no
-  wider than 320 (the First Map's opening shot, 5x5 tiles) keeps black at its sides, the game having nothing beside it
-  to draw, and its 3D and the HUD keep inside 4:3 with it (`board_back.c`), as they do in a scene the game draws at 4:3
-  (Chance Time, Buried Treasure, Treasure Divers, Tipsy Tourney, Deep Sea Divers, the title: `patches/widescreen.c`'s
-  list). A minigame whose 3D ends short of a wide window's edges (Mario Bandstand's stage, Hammer Drop's sea) is drawn
-  no wider than where it ends, `patches/widescreen.c`'s second list, with black bars only past that.
+  `src/model_ids.cpp`, and RT64 pairs whatever else the game draws by itself, a texrect the game moves (the glove that
+  points at a choice in Mushroom Village's houses) too, with RT64_INTERPOLATE_RECT_SCROLLS on here as with Emscripten.
+  The game draws a frame in several RSP tasks, one a camera (`func_8002D614`), some of them empty, which RT64
+  interpolates as one game frame with RT64_GAME_FRAME_WORKLOADS, on with Emscripten and in `CMakeLists.txt` on the
+  desktop too. It draws a picture wider than 4:3 with Aspect Ratio Expand: `patches/widescreen.c` takes a camera's view
+  to the window's edges and `patches/background.c` a board's background, through lib/mario-party-engine's
+  `camera_view.c` and `board_back.c` (their headers say how), and `us.toml`'s hooks in the sprite manager the board's
+  HUD, the players' panels, to its left and right edges (and Grab Bag's, Crane Game's and Bash 'n' Cash's corner HUD,
+  each player's name and coins, from hooks at the end of the function that makes it), and a picture as wide as the
+  screen stretched over the window
+  wherever the game puts it (kept to 4:3 in a scene the game draws at 4:3), through lib/mario-party-engine's
+  `src/hud.cpp`, and its hooks in the wipe module draw a wipe's colour (an iris's black, a fade) to them too, through
+  its `src/wipe.cpp`; on a minigame's instructions screen `patches/instructions.c` carries its strips of cloud on past
+  4:3 with a copy of each on either side and `src/game/instructions.cpp` hides the players and props waiting left of
+  4:3 while its cloud grows out of black, and in Piranha's Pursuit `patches/widescreen.c` widens the ground, one mesh
+  only a little wider than 4:3's view, and copies its trees and bushes a ring's width to each side of the 3000 the game
+  keeps them in, and shows its obstacles (vines, logs, boulders) out to the wider picture's edges, past the 1300 from
+  the scroll the game hides them beyond. RT64 carries a model's matrices and a tile's scroll on between the game's frames, but not texture
+  coordinates the game writes into vertices: that ground's texture, slid that way, stood still between them, so it is
+  moved instead, in three pieces placed where the slid texture stood (`widescreen_piranhas_ground_placed`). In Mushroom Mixup it hides a Blooper and the player it drags off past the picture's edge rather than the game's x 1000, 4:3's (`widescreen_blooper_gone`), the player let go at 1000 as the game does, so the mushrooms and the round keep their timing. In Limbo Dance it copies each prop of the scenery ring the game moves on at a ring's half-width (1050) past the camera, a ring's width (2100) to the side away from it, the ferns in front left out (`widescreen_limbo_scenery`); a torch's sprites are copied into 9 more entries of its sprite pool, kept hidden when unused so the game never takes them. In Paddle Battle `patches/paddle_battle.c` fades the shafts of sunlight out at
+  their sides and ends, whose quads showed hard edges (and joins the river's sections). In Musical Mushroom it lays a copy of the floor beside each of its sides and corners, the floor with its sand ring keeping its size. In Cast Aways `patches/cast_aways.c` draws the sky a twelfth taller, so it reaches the screen's top: the game put it 10 lines down, over its clear colour, a band a TV's overscan hid. Its coins, bags and chests appear and vanish past the window's edges, not 4:3's (`cast_aways_item_spawned`, `cast_aways_item_gone_right` and `_left`, us.toml's hooks), each row keeping its cap. In Platform Peril `patches/widescreen.c` hides a fallen platform once the game parks it, still drawn, at (-5000, -5000, -5000), just past 4:3's bottom left (`widescreen_platform_parked`; only its models parked with it, as one of its slots names the sky). In Coin Block Blitz and Bash 'n' Cash `src/game/huge_forms.cpp` hides a form scaled past 20 times, a shadow the game scales by its caster's height and hands that height itself above 200 (300-453 times under a hit ? block, 300-636 times under what a hit on the Bowser Suit throws up), which darkened the whole floor (in Coin Block Blitz once RT64's decal test took the console's depth tolerance, `RT64_RDP_DECAL_TOLERANCE`, for the blocks' own shadows). In Bobsled Run a hook in `us.toml` draws all six of the course's sections in both views the whole race (`func_800FCB44` drew one in a view only while its sled was within that section's stretch of the course, so walls and the cave came in all at once ahead of the sleds). In Skateboard Scamper `patches/widescreen.c` makes the lava, one 1500-wide square the game keeps under the course at x -600 as it scrolls, larger in x and z by three times what the picture is wider than 4:3 by (twice its size at 16:9), with its texture coordinates as much further apart so its pattern keeps its size (`widescreen_skate_lava`; black showed past its corners), and shows the goal from as many times further than the game's 3000 (`widescreen_skate_goal_reach`). On a board, the game hides a character or prop 50 units past 4:3's sides (func_8003DE60); `patches/widescreen.c` moves that out to the window's sides (`widescreen_board_shown`, hooked between the projection and the test). The board's camera stops where the wider picture reaches the map's edge (`patches/background.c`, with
+  the engine's `src/aspect_ratio.cpp`). A map no wider than 320 (the First Map's opening shot, 5x5 tiles) keeps black at
+  its sides, the game having nothing beside it to draw, and its 3D and the HUD keep inside 4:3 with it (`board_back.c`),
+  as they do in a scene the game draws at 4:3 (Chance Time, Buried Treasure, Treasure Divers, Tipsy Tourney, Deep Sea
+  Divers, the title: `patches/widescreen.c`'s list). A minigame whose 3D ends short of a wide window's edges (Mario
+  Bandstand's stage, Hammer Drop's sea) is drawn no wider than where it ends, `patches/widescreen.c`'s second list, with
+  black bars only past that.
 - **The survey.** `patches/survey.c`, `src/game/survey.cpp` and `tools/survey.js` let a plan send the game to any
   overlay (a board, a minigame, a menu) the way the game goes there, for the shader list and the plays
   (`docs/web.md`). Overlay indices are the decomp's (`lib/marioparty/src/overlays`).
