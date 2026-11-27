@@ -17,6 +17,9 @@
 # it leave), to join the session in progress again (its log: player2-again.log).
 # NETPLAY_TEST_GUEST_WINDOW gives the guests' windows another size than the host's 640x480 (1280x540, say), to test
 # that a window's shape changes nothing the game plays by.
+# NETPLAY_TEST_SERVER names a netplay server's binary (src/netplay/server): the session goes through it, on UDP port
+# 7846 (its log: server.log), player 1 joining it first and so hosting. NETPLAY_TEST_SERVER_KICK=<seconds>:<player
+# number on the server> has its admin kick that player that long in (NETPLAY_TEST_PLAYERS of 3, so the session goes on).
 set -euo pipefail
 
 build="$(realpath "$1")"
@@ -99,24 +102,47 @@ run() {
 
 players="${NETPLAY_TEST_PLAYERS:-2}"
 echo "a session of $players players, $frames frames"
-run player1 MP_NETPLAY_HOST="$players" MP_NETPLAY_PORT=7845 ${NETPLAY_TEST_RESUME:+MP_NETPLAY_RESUME=1}
+if [ -n "${NETPLAY_TEST_SERVER:-}" ]; then
+    server_bin="$(realpath "$NETPLAY_TEST_SERVER")"
+    "$server_bin" --port 7846 --control "$out/server.sock" > "$out/server.log" 2>&1 < /dev/null &
+    server=$!
+    trap 'kill $xvfb $server 2>/dev/null || true' EXIT
+    sleep 1
+    run player1 MP_NETPLAY_SERVER=127.0.0.1:7846 MP_NETPLAY_PLAYERS="$players" MP_NETPLAY_NAME=P1 \
+        ${NETPLAY_TEST_RESUME:+MP_NETPLAY_RESUME=1}
+    sleep 3 # the first on the server hosts
+else
+    run player1 MP_NETPLAY_HOST="$players" MP_NETPLAY_PORT=7845 ${NETPLAY_TEST_RESUME:+MP_NETPLAY_RESUME=1}
+fi
 p1=$!
 pids=("$p1")
 for n in $(seq 2 "$players"); do
-    # shellcheck disable=SC2086 # NETPLAY_TEST_GUEST_ENV is a list of variables
-    run "player$n" MP_NETPLAY_PEER=127.0.0.1 ${NETPLAY_TEST_GUEST_ENV:-}  # the host gives each its player
+    if [ -n "${NETPLAY_TEST_SERVER:-}" ]; then
+        # shellcheck disable=SC2086 # NETPLAY_TEST_GUEST_ENV is a list of variables
+        run "player$n" MP_NETPLAY_SERVER=127.0.0.1:7846 MP_NETPLAY_NAME="P$n" ${NETPLAY_TEST_GUEST_ENV:-}
+        sleep 1 # in order, so player n is the nth to join
+    else
+        # shellcheck disable=SC2086 # NETPLAY_TEST_GUEST_ENV is a list of variables
+        run "player$n" MP_NETPLAY_PEER=127.0.0.1 ${NETPLAY_TEST_GUEST_ENV:-}  # the host gives each its player
+    fi
     pids+=("$!")
 done
+if [ -n "${NETPLAY_TEST_SERVER_KICK:-}" ]; then
+    (sleep "${NETPLAY_TEST_SERVER_KICK%%:*}" && "$server_bin" --control "$out/server.sock" ctl kick \
+        "${NETPLAY_TEST_SERVER_KICK#*:}" testing a kick >> "$out/server.log" 2>&1) &
+fi
 p2="${pids[1]}"
 sleep 3
 drive "$p1" &
 driver=$!
 if [ -n "${NETPLAY_TEST_REJOIN:-}" ]; then
     # Player 2 joins again that many seconds in, from its folder, once its copy has left (MP_NETPLAY_TEST_LEAVE).
+    rejoin_to="MP_NETPLAY_PEER=127.0.0.1"
+    [ -n "${NETPLAY_TEST_SERVER:-}" ] && rejoin_to="MP_NETPLAY_SERVER=127.0.0.1:7846 MP_NETPLAY_NAME=P2"
     wait "$p2" || true
     sleep "$NETPLAY_TEST_REJOIN"
     (cd "$out/player2" && exec env -u MP_NETPLAY_TEST_LEAVE MP_NETPLAY_NO_MESSAGES=1 MP_NETPLAY_MINIGAMES="$minigames" \
-        MP_NETPLAY_FRAMES="$frames" MP_NETPLAY_DROP="${MP_NETPLAY_DROP:-0}" MP_NETPLAY_PEER=127.0.0.1 \
+        MP_NETPLAY_FRAMES="$frames" MP_NETPLAY_DROP="${MP_NETPLAY_DROP:-0}" $rejoin_to \
         "$build/MarioPartyRecompiled" --boot --window 640x480) > "$out/player2-again.log" 2>&1 < /dev/null &
     pids[1]=$!
 fi
@@ -125,6 +151,11 @@ for pid in "${pids[@]}"; do
     wait "$pid" || status=1
 done
 kill $driver 2>/dev/null || true
+if [ -n "${NETPLAY_TEST_SERVER:-}" ]; then
+    "$server_bin" --control "$out/server.sock" ctl players || true
+    echo "server:"
+    cat "$out/server.log"
+fi
 for n in $(seq 1 "$players"); do
     echo "player$n:"
     grep '\[netplay\]' "$out/player$n.log" | grep -v ': overlay\|asking for' || true

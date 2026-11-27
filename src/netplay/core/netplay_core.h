@@ -148,6 +148,9 @@ namespace netplay {
         uint16_t port = 0;
         std::string name; // the player's, for the lobby (at most 16 bytes); empty: "Player N"
         bool resume = false; // the host's: resume the last party (party_save) rather than start a new one
+        // Through the netplay server joined with server_join (peer: its address, as typed), as the host or a guest as
+        // the server said.
+        bool via_server = false;
     };
     // As the program closes during a session: tells the other copies this one is leaving (the host's guests, that
     // the session is over; the host, that a computer player takes this copy's player's place).
@@ -187,6 +190,21 @@ namespace netplay {
     };
     // Returns false if another mode runs, or the session couldn't open (the status says why).
     bool lobby_open(const SessionSettings& settings);
+    // A netplay server (src/netplay/server), for players who can't reach each other: server_join joins it on a thread
+    // of its own, and once the server has taken this copy, as the party's host (the first to join) or a guest, its
+    // lobby opens with via_server (lobby_open). server_cancel stops a join still going; a lobby's close leaves the
+    // server.
+    struct ServerJoin {
+        enum Phase { Idle, Joining, Joined, Failed };
+        Phase phase = Idle;
+        bool host = false;
+        std::string reason; // Failed: why
+    };
+    void server_join(const std::string& address, const std::string& name, const std::string& password);
+    ServerJoin server_join_status();
+    void server_cancel();
+    // Whether this copy plays through a netplay server: a player who left joins it again rather than the host.
+    bool via_server();
     LobbyStatus lobby_status();
     void lobby_set_ready(bool ready);
     // On the host: starts the session once everyone, the host included, is ready.

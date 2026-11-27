@@ -13,7 +13,10 @@
 // - MP_NETPLAY_PEER=<host>[:<port>]: joins the session hosted there, as the player the host gives it, or as
 //   MP_NETPLAY_PLAYER (1 to 3: port 2 to 4) of MP_NETPLAY_PLAYERS when both are set, from MP_NETPLAY_PORT (any by
 //   default). Without these, the game's Online settings say (src/netplay/mario_party.cpp, set_session).
-// - For either: MP_NETPLAY_DELAY (frames of input delay, 3 by default), MP_NETPLAY_FRAMES (ends the session after
+// - MP_NETPLAY_SERVER=<server>[:<port>]: joins the session through a netplay server (src/netplay/server), as the host
+//   of MP_NETPLAY_PLAYERS (2 by default) if this copy is the first there and as a guest otherwise, with the server's
+//   password MP_NETPLAY_PASSWORD and the name MP_NETPLAY_NAME.
+// - For each: MP_NETPLAY_DELAY (frames of input delay, 3 by default), MP_NETPLAY_FRAMES (ends the session after
 //   that many frames, for tests), MP_NETPLAY_TIMEOUT_MS (how long a frame waits for a silent player, 15000) and
 //   MP_NETPLAY_DROP (a share of packets to drop, in percent, to test a lossy link). MP_NETPLAY_RESUME=1 on the host
 //   resumes the last party (netplay_internal.h's party save) rather than starting a new one.
@@ -28,6 +31,7 @@
 
 #include "netplay_core.h"
 #include "netplay_internal.h"
+#include "udp.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -376,7 +380,24 @@ void netplay::init(const Game& g, const ultramodern::input::callbacks_t& callbac
         record_frames = strtoll(limit, nullptr, 10);
     }
     const char* port = getenv("MP_NETPLAY_PORT");
-    if (const char* host = getenv("MP_NETPLAY_HOST")) {
+    if (const char* server = getenv("MP_NETPLAY_SERVER")) {
+        const char* password = getenv("MP_NETPLAY_PASSWORD");
+        const char* name = getenv("MP_NETPLAY_NAME");
+        const char* n = getenv("MP_NETPLAY_PLAYERS");
+        SessionSettings s;
+        std::string error;
+        if (!udp::relay_connect(server, name != nullptr ? name : "", password != nullptr ? password : "", s.host, error,
+                                nullptr)) {
+            fprintf(stderr, "[netplay] the server: %s\n", error.c_str());
+            std::_Exit(5);
+        }
+        fprintf(stderr, "[netplay] on the server %s as %s\n", server, s.host ? "the host" : "a guest");
+        s.via_server = true;
+        s.peer = server;
+        s.players = n != nullptr ? atoi(n) : 2;
+        s.resume = s.host && getenv("MP_NETPLAY_RESUME") != nullptr;
+        current_mode = open_session(s) ? Mode::Session : Mode::Off;
+    } else if (const char* host = getenv("MP_NETPLAY_HOST")) {
         SessionSettings s;
         s.host = true;
         s.players = atoi(host);

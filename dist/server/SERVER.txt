@@ -1,0 +1,67 @@
+Mario Party Recompiled's netplay server (alpha)
+===============================================
+
+The server lets friends play online without a VPN or anyone forwarding a port: only the server needs a port the
+players can reach. It doesn't run the game and needs no ROM. It passes each player's buttons along, and every player
+still runs the game on their own computer. It holds one party of 2 to 4 players. The first player to join it hosts
+that party (as if they'd chosen Host a Party) and everyone after joins it.
+
+Players need a release of the game with Play on a Server, of the same relay version as the server (the server
+turns away one that isn't): in the game, Online Play, Play on a Server, then the
+server's address (a name like play.example.com or an IP address, with :port if it isn't 7845) and its password.
+
+Running it
+----------
+On any 64-bit Linux (it's a single file with no libraries to install):
+
+    ./netplay-server                       # UDP port 7845, no password
+    ./netplay-server --port 7845 --password "our secret" --max-players 4
+
+Open UDP port 7845 to the internet: in the VPS's firewall or security group (and ufw/firewalld if it runs one:
+`sudo ufw allow 7845/udp`), or on a home server, forward UDP 7845 on the router to it. The password can come from the
+MP_NETPLAY_SERVER_PASSWORD environment variable instead, so it doesn't show in the process list.
+
+Run in a terminal, it takes the commands below typed into it. It logs who joins and leaves to its output.
+
+As a service (starts on boot, restarts if it stops)
+---------------------------------------------------
+
+    sudo install -m 755 netplay-server /usr/local/bin/netplay-server
+    sudo install -m 644 netplay-server.service /etc/systemd/system/netplay-server.service
+    echo 'MP_NETPLAY_SERVER_PASSWORD=our secret' | sudo tee /etc/netplay-server.env   # optional
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now netplay-server
+    journalctl -u netplay-server -f          # its log
+
+To change its port or player limit, edit ExecStart in the .service file (sudo systemctl edit --full netplay-server).
+
+Admin commands
+--------------
+Type them into the server's terminal, or send them to a running server (a service too) from the same computer:
+
+    netplay-server ctl players               # who's on, their number, ping, address
+    sudo netplay-server ctl players          # the service's (it runs as its own user)
+
+    players                 who is on the server
+    kick <player> [why]     removes a player (their number from `players`, or their name); they can join again
+    ban <player> [why]      removes a player and keeps their address (everyone on their network) out until the
+                            server stops
+    bans / unban <n|all>    the bans, and lifting them
+    password <text>         joining needs this password from now on (players already in stay)
+    password off            joining needs no password
+    lock / unlock           stops / lets new players join (players already in can still reconnect)
+    max <2-4>               the most players the party takes
+    release                 stops holding the host's place (below): the next player to join hosts
+    end                     removes everyone, ending the party
+    stop                    stops the server
+
+What the admin changes lasts until the server stops: its options (or the .service file) are what it starts with. A
+server running with another --port is reached with `netplay-server --port <port> ctl ...`.
+
+Who hosts
+---------
+The first player to join hosts. When the host leaves (Leave, or closing the game), the next player to join hosts. When
+the host only drops out (the game restarting back into the lobby after "Back to lobby", the game crashing, or a
+moment without a connection), the server holds the host's place for them for 45 seconds, so they come back as the host whatever order
+everyone reconnects in; `release` lets someone else host at once. Removing the host (kick, ban) ends the party for
+everyone, as the host leaving does, and the party can be picked up again with Resume Party.

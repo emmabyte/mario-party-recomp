@@ -100,7 +100,38 @@ and the session ends. `tools/netplay_session_test.sh`'s `NETPLAY_TEST_RESUME` te
 it.
 
 Each plays with their own first controller. Only the host's UDP port (7845 by default) must be reachable from the
-others: over the internet, a shared VPN or the port forwarded on the host's router.
+others: over the internet, a shared VPN or the port forwarded on the host's router, or a netplay server (below).
+
+## Playing through a server
+
+A netplay server (`src/netplay/server`) is a program of its own, for Linux, that passes a session's packets between
+its players so that only the server needs a port the others can reach: a VPS, or a home server with its port
+forwarded. It knows nothing of the game and needs no ROM. Each copy still runs the game and the session, and the
+server only relays: a guest's packets to the host, the host's to each guest, as they come. `relay_protocol.h` is what
+the two speak and `server.cpp`'s header how to run it; `dist/server/SERVER.txt` is the admin's how-to, shipped in its
+release with a systemd unit (`tools/release_server.sh` builds that release: a static binary for x86-64 and arm64,
+named after the game's release it ships with; a copy that speaks another version of the relay protocol is turned away
+as it joins).
+
+A server holds one party. In Online Play's **Play on a Server** a player types the server's address and its password;
+the server takes them as the party's host if no one hosts yet, and as a guest otherwise, and the party opens as if
+they had chosen Host a Party or Join a Party (`netplay::server_join`, then `lobby_open` with `via_server`). The core's
+socket (`core/udp.cpp`) then talks to the server alone: the host and each guest are relay endpoints, the server's
+ids for them, which `udp::send` and `udp::receive` wrap and unwrap, so the session runs unchanged, its handshake still
+checking the ROM, build, mods and options end to end and the delay covering the round trip through the server. The
+server's own word that a player left (it said so, was kicked, or went quiet for 20 seconds) reaches the session as
+that player's goodbye, and a copy the server removed leaves its session with the admin's reason. A host that drops out
+without leaving (the restart back into the lobby, a moment without a connection) keeps the host's place for 45
+seconds: each copy joins with a token of its own (kept in the Online settings, and given to the core in
+`MP_NETPLAY_RELAY_TOKEN`), so after Back to lobby, or its game closing or crashing, the host comes back as the host
+whatever order everyone reconnects in, and the launcher joins the same
+server again (the Online tab keeps the server's address, its password and whether the last party was on a server).
+The admin's commands (`players`, `kick`, `ban`, `password`, `lock`, `max`, `release`, `end`) come from the server's
+terminal or `netplay-server ctl`, through a Unix socket only its user can open.
+
+`MP_NETPLAY_SERVER=<address>` starts a session through a server from the environment (`core/netplay_core.cpp`), and
+`tools/netplay_session_test.sh`'s `NETPLAY_TEST_SERVER` plays its session through one, with `NETPLAY_TEST_SERVER_KICK`
+to kick a player partway.
 
 Each copy keeps a record of its session in `netplay/sessions/<time>-p<player>/`, beside the saves folder (the last
 ten): `inputs.mpnp` and its `.hash`, a recording `MP_NETPLAY_REPLAY` plays with `host.save` as the save, and

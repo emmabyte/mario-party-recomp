@@ -55,6 +55,12 @@
 // it up at the first frame its game could be saved at (join_now) and the player given back their character (the
 // resync's ports given back). A host that leaves ends its guests'.
 // Each whole frame also carries the VIs it took on the host (Frame's vis), for the game's sound to keep real time.
+//
+// Through a netplay server (SessionSettings' via_server; udp.h's relay_connect) the same packets go by way of the
+// server, which passes them on: the host and the guests are its relay endpoints rather than addresses, and nothing
+// else changes. The server's word that a player left is that player's goodbye (bye_from), and a copy it removed ends its
+// session with the server's reason. A guest on a server waits up to a minute for its host, whose place the server
+// holds while it comes back.
 
 #include "netplay_internal.h"
 #include "udp.h"
@@ -1095,6 +1101,33 @@ namespace {
         }
     }
 
+    // A copy's goodbye (KIND_BYE), or a netplay server's word that it left (udp::relay_take_gone).
+    void bye_from(const udp::Endpoint& from_endpoint) {
+        if (hosting) {
+            for (int p = 1; p < players; p++) {
+                if (remotes[p].known && remotes[p].endpoint == from_endpoint) {
+                    if (handshaken) {
+                        guest_gone(p, "left");
+                    } else {
+                        say("[netplay] player %d left\n", p + 1);
+                        drop_guest(p);
+                    }
+                    break;
+                }
+            }
+            return;
+        }
+        if (from_endpoint == remotes[0].endpoint && !handshaken) {
+            say("[netplay] the host closed the lobby\n");
+            end_session(3);
+        }
+        if (from_endpoint == remotes[0].endpoint && handshaken && !in_lobby) {
+            say("[netplay] the host left the party. The party was saved at the start of the last scene: the host can "
+                "pick it up with Resume Party.\n");
+            end_session(3);
+        }
+    }
+
     // Takes in one packet, if one came within wait_ms. Returns whether one did.
     bool handle_packet(const uint8_t* buf, size_t n, const udp::Endpoint& from_endpoint);
 
@@ -1104,6 +1137,22 @@ namespace {
         uint8_t buf[1500];
         udp::Endpoint from_endpoint;
         size_t n = udp::receive(buf, sizeof(buf), wait_ms, from_endpoint);
+        if (udp::relay_on()) {
+            // Through a netplay server: a player it says has left left, and this copy removed from it is out of the
+            // session.
+            std::lock_guard<std::recursive_mutex> lock(session_mutex);
+            udp::Endpoint gone;
+            while (udp::relay_take_gone(gone)) {
+                bye_from(gone);
+            }
+            std::string why = udp::relay_ended();
+            if (!why.empty()) {
+                while (!why.empty() && (why.back() == '.' || why.back() == '\n')) why.pop_back();
+                if (!why.empty()) why[0] = char(tolower(uint8_t(why[0])));
+                say("[netplay] %s\n", why.c_str());
+                end_session(3);
+            }
+        }
         if (n == 0) {
             return false;
         }
@@ -1124,35 +1173,8 @@ namespace {
         }
         uint8_t kind = r.u8();
         int who = r.u8();
-        if (hosting && r.ok && kind == KIND_BYE) {
-            if (handshaken) {
-                for (int p = 1; p < players; p++) {
-                    if (remotes[p].known && remotes[p].endpoint == from_endpoint) {
-                        guest_gone(p, "left");
-                        break;
-                    }
-                }
-            } else {
-                for (int p = 1; p < players; p++) {
-                    if (remotes[p].known && remotes[p].endpoint == from_endpoint) {
-                        say("[netplay] player %d left\n", p + 1);
-                        drop_guest(p);
-                        break;
-                    }
-                }
-            }
-            return true;
-        }
-        if (!hosting && r.ok && kind == KIND_BYE) {
-            if (from_endpoint == remotes[0].endpoint && !handshaken) {
-                say("[netplay] the host closed the lobby\n");
-                end_session(3);
-            }
-            if (from_endpoint == remotes[0].endpoint && handshaken && !in_lobby) {
-                say("[netplay] the host left the party. The party was saved at the start of the last scene: the host can "
-                    "pick it up with Resume Party.\n");
-                end_session(3);
-            }
+        if (r.ok && kind == KIND_BYE) {
+            bye_from(from_endpoint);
             return true;
         }
         if (hosting && r.ok && kind == KIND_HELLO && (who == UNASSIGNED || !handshaken)) {
@@ -1693,6 +1715,7 @@ namespace {
                             send(remotes[0], w);
                         }
                     }
+                    udp::relay_final();
                     udp::close();
                     set_status(LobbyStatus::Closed);
                     return;
@@ -1740,10 +1763,14 @@ namespace {
                 } else {
                     bool heard = player >= 0;
                     auto silent = now - (heard ? remotes[0].heard : opened);
-                    if (silent > std::chrono::seconds(heard ? 6 : 20)) {
-                        say(heard ? "[netplay] the host stopped answering\n"
-                                  : "[netplay] the host never answered: check the address, and that the host's port "
-                                    "is open to you\n");
+                    // Through a server, a guest may wait for a host who is coming back to it (the server holds its
+                    // place 45 seconds).
+                    bool relayed = udp::relay_on();
+                    if (silent > std::chrono::seconds(heard ? 6 : relayed ? 60 : 20)) {
+                        say(heard     ? "[netplay] the host stopped answering\n"
+                            : relayed ? "[netplay] no host came to the server\n"
+                                      : "[netplay] the host never answered: check the address, and that the host's "
+                                        "port is open to you\n");
                         end_session(3);
                     }
                 }
@@ -2048,6 +2075,10 @@ bool netplay::detail::open_session(const SessionSettings& settings) {
         sscanf(l, "%d:%d:%d:%d:%d", &latency_ms, &latency_jitter_ms, &spike_from_s, &spike_for_s, &spike_ms);
     }
     uint16_t port = settings.port;
+    if (settings.via_server && !udp::relay_on()) {
+        say("[netplay] this copy isn't on the server %s any more: join it again\n", settings.peer.c_str());
+        end_session(5);
+    }
     if (hosting) {
         player = 0;
         players = std::clamp(settings.players, 2, PORTS);
@@ -2063,7 +2094,9 @@ bool netplay::detail::open_session(const SessionSettings& settings) {
         if (peer.find(':') == std::string::npos) {
             peer += ":7845";
         }
-        if (!udp::resolve(peer, remotes[0].endpoint)) {
+        if (settings.via_server && udp::relay_on()) {
+            remotes[0].endpoint = udp::relay_host(); // the host, through the server the copy joined
+        } else if (!udp::resolve(peer, remotes[0].endpoint)) {
             say("[netplay] couldn't find the host at %s (an address, like 203.0.113.5 or 203.0.113.5:7845)\n", peer.c_str());
             end_session(5);
         }
@@ -2073,7 +2106,10 @@ bool netplay::detail::open_session(const SessionSettings& settings) {
         say("[netplay] couldn't open UDP port %u: is another copy of the game using it?\n", unsigned(port));
         end_session(5);
     }
-    if (hosting && in_lobby) {
+    if (settings.via_server) {
+        say(hosting ? "[netplay] hosting on the server %s\n" : "[netplay] joining the party on the server %s\n",
+            settings.peer.c_str());
+    } else if (hosting && in_lobby) {
         say("[netplay] hosting on UDP port %u\n", unsigned(port));
     } else if (hosting) {
         say("[netplay] hosting a session of %d players on UDP port %u\n", players, unsigned(port));
@@ -2309,13 +2345,65 @@ bool netplay::detail::lobby_begin(const SessionSettings& settings) {
         players = PORTS; // the guests' places, until Start says how many play
         std::lock_guard lock{ status_mutex };
         status.share.clear();
-        for (const std::string& a : udp::local_addresses()) {
-            status.share.push_back(a + ":" + std::to_string(settings.port != 0 ? settings.port : 7845));
+        if (settings.via_server) {
+            status.share.push_back(settings.peer); // the others join the same server
+        } else {
+            for (const std::string& a : udp::local_addresses()) {
+                status.share.push_back(a + ":" + std::to_string(settings.port != 0 ? settings.port : 7845));
+            }
         }
     }
     set_status(LobbyStatus::Waiting);
     lobby_thread = std::thread(run_lobby);
     return true;
+}
+
+namespace {
+    std::mutex server_mutex;
+    ServerJoin server_state;           // under server_mutex
+    std::atomic<bool> server_cancelled{ false };
+    std::thread server_thread;
+}
+
+void netplay::server_join(const std::string& address, const std::string& name, const std::string& password) {
+    server_cancel();
+    {
+        std::lock_guard lock{ server_mutex };
+        server_state = ServerJoin{};
+        server_state.phase = ServerJoin::Joining;
+    }
+    server_cancelled = false;
+    server_thread = std::thread([address, name, password]() {
+        bool host = false;
+        std::string error;
+        bool joined = udp::relay_connect(address, name.substr(0, MAX_NAME), password, host, error, &server_cancelled);
+        std::lock_guard lock{ server_mutex };
+        server_state.phase = joined ? ServerJoin::Joined : ServerJoin::Failed;
+        server_state.host = host;
+        server_state.reason = error;
+    });
+}
+
+bool netplay::via_server() {
+    return udp::relay_on();
+}
+
+ServerJoin netplay::server_join_status() {
+    std::lock_guard lock{ server_mutex };
+    return server_state;
+}
+
+void netplay::server_cancel() {
+    server_cancelled = true;
+    if (server_thread.joinable()) {
+        server_thread.join();
+    }
+    std::lock_guard lock{ server_mutex };
+    if (server_state.phase == ServerJoin::Joined && !in_lobby) {
+        udp::relay_final(); // joined, but its lobby never opened
+        udp::close();
+    }
+    server_state = ServerJoin{};
 }
 
 LobbyStatus netplay::lobby_status() {
@@ -2346,4 +2434,5 @@ void netplay::detail::lobby_end(bool play) {
 
 void netplay::leave() {
     goodbye();
+    udp::relay_final();
 }

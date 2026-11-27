@@ -1,8 +1,12 @@
 // The launcher's Online Play: three screens over the launcher, in RecompFrontend's own look (its theme, buttons and
 // labels), laid out as the project's design for them has them.
-// - Online Play: the player's name, then Host a Party, Resume Party (when this copy saved one), Join a Party and
-//   Back.
+// - Online Play: the player's name, then Host a Party, Resume Party (when this copy saved one), Join a Party, Play on
+//   a Server and Back.
 // - Join a Party: the host's address, Connect! and Back, and how connecting goes.
+// - Play on a Server: a netplay server's address (src/netplay/server, for players who can't reach each other) and its
+//   password, Connect! (Resume Party too, when this copy saved one) and Back. The first player on the server hosts the
+//   party and the others join it, so the party that follows is a host's or a guest's as the server says, through it.
+//   Back from a party that ended into its lobby (returned) joins the same server again.
 // - The party: a place for each of four players (its number, an initial, the name, HOST and YOU, the round trip to the
 //   host, and whether they're ready), the address to share (the host's) or joined (a guest's), a note that characters
 //   and rules are chosen in the game, and Leave, Ready? and, for the host, Let's Party!, which starts the game once
@@ -13,7 +17,10 @@
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
+#include <random>
 #include <string>
 
 #include "librecomp/config.hpp"
@@ -237,9 +244,12 @@ namespace {
     }
 
     class OnlineScreens : public Element {
-        enum class Screen { Menu, Join, Party };
+        enum class Screen { Menu, Join, Server, Party };
         Screen screen = Screen::Menu;
         bool connecting = false; // Join: a lobby is open, and the host hasn't given this copy a place yet
+        bool server_joining = false; // Play on a Server: joining the server, before its lobby opens
+        bool via_server = false;     // the lobby, or the join, is through a server
+        bool server_resume = false;  // Play on a Server's Resume Party: if this copy hosts, it resumes
         bool in_party = false;   // Party: the lobby is open
         bool ready = false;
         bool started = false;
@@ -260,6 +270,14 @@ namespace {
         Label* join_error;
         Button* connect_button;
         Label* join_state;
+
+        Element* server;
+        TextInput* server_input;
+        TextInput* password_input;
+        Label* server_error;
+        Button* server_connect_button;
+        Button* server_resume_button;
+        Label* server_state;
 
         Element* party;
         Label* party_title;
@@ -308,6 +326,9 @@ namespace {
             Button* join_button = menu_button(context, menu, "Join a Party", "Enter the host's address",
                                               ButtonStyle::Secondary);
             join_button->add_pressed_callback([this]() { show(Screen::Join); });
+            Button* server_button = menu_button(context, menu, "Play on a Server", "Enter the server's address",
+                                                ButtonStyle::Secondary);
+            server_button->add_pressed_callback([this]() { show(Screen::Server); });
             Button* back = menu_button(context, menu, "Back", "", ButtonStyle::Tertiary);
             back->add_pressed_callback([]() { mp_netplay::close_online(); });
 
@@ -333,6 +354,38 @@ namespace {
             });
             join_state = context.create_element<Label>(join, "", LabelStyle::Small);
             join_state->set_color(theme::color::TextDim);
+
+            // Play on a Server.
+            server = panel(context, this, 640);
+            context.create_element<Label>(server, "Play on a Server", LabelStyle::Large);
+            sub = context.create_element<Label>(server, "No port to open: everyone joins the same server. The first "
+                                                        "one there hosts the party.", LabelStyle::Small);
+            sub->set_color(theme::color::TextDim);
+            context.create_element<Label>(server, "Server's address", LabelStyle::Small);
+            server_input = context.create_element<TextInput>(server);
+            context.create_element<Label>(server, "Password (if the server has one)", LabelStyle::Small);
+            password_input = context.create_element<TextInput>(server, false); // shown as dots
+            server_error = context.create_element<Label>(server, "", LabelStyle::Small);
+            server_error->set_color(theme::color::Danger);
+            Element* server_row = row(context, server);
+            server_connect_button = context.create_element<Button>(server_row, "Connect!", ButtonStyle::Success);
+            server_connect_button->add_pressed_callback([this]() { join_server(false); });
+            server_resume_button = context.create_element<Button>(server_row, "Resume Party", ButtonStyle::Primary);
+            server_resume_button->add_pressed_callback([this]() { join_server(true); });
+            Button* server_back = context.create_element<Button>(server_row, "Back", ButtonStyle::Tertiary);
+            server_back->add_pressed_callback([this]() {
+                if (server_joining) {
+                    netplay::server_cancel();
+                    server_joining = false;
+                }
+                if (connecting) {
+                    netplay::lobby_close();
+                    connecting = false;
+                }
+                show(Screen::Menu);
+            });
+            server_state = context.create_element<Label>(server, "", LabelStyle::Small);
+            server_state->set_color(theme::color::TextDim);
 
             // The party.
             party = panel(context, this, 1200);
@@ -382,9 +435,13 @@ namespace {
             // last scene everyone reached.
             uint64_t frame = 0;
             int party_players = 0;
-            resume_button->set_display(netplay::party_save(frame, party_players) ? Display::Flex : Display::None);
+            bool saved = netplay::party_save(frame, party_players);
+            resume_button->set_display(saved ? Display::Flex : Display::None);
+            server_resume_button->set_display(saved ? Display::Flex : Display::None);
             name_input->set_text(option("name"));
             address_input->set_text(option("address"));
+            server_input->set_text(option("server"));
+            password_input->set_text(option("server_password"));
             show(Screen::Menu);
         }
 
@@ -392,6 +449,7 @@ namespace {
             screen = s;
             menu->set_display(s == Screen::Menu ? Display::Flex : Display::None);
             join->set_display(s == Screen::Join ? Display::Flex : Display::None);
+            server->set_display(s == Screen::Server ? Display::Flex : Display::None);
             party->set_display(s == Screen::Party ? Display::Flex : Display::None);
             ContextId context = get_current_context();
             if (s == Screen::Join) {
@@ -399,6 +457,12 @@ namespace {
                 join_state->set_text("");
                 connect_button->set_enabled(true);
                 context.set_autofocus_element(address_input);
+            } else if (s == Screen::Server) {
+                server_error->set_text("");
+                server_state->set_text("");
+                server_connect_button->set_enabled(true);
+                server_resume_button->set_enabled(true);
+                context.set_autofocus_element(server_input);
             } else if (s == Screen::Menu) {
                 context.set_autofocus_element(host_button);
             } else {
@@ -412,7 +476,11 @@ namespace {
         void returned(const std::string& reason, const std::string& lobby) {
             show(Screen::Menu);
             menu_note->set_text(reason);
-            if (lobby == "host") {
+            if (!lobby.empty() && option("via") == "server") {
+                // The same server again: the host's place is held for it a while, so it hosts again.
+                show(Screen::Server);
+                join_server(lobby == "host");
+            } else if (lobby == "host") {
                 host(true);
             } else if (lobby == "join") {
                 show(Screen::Join);
@@ -435,6 +503,7 @@ namespace {
         }
 
         bool open_lobby(const netplay::SessionSettings& s) {
+            via_server = s.via_server;
             ready = false;
             started = false;
             was_present = {};
@@ -451,6 +520,7 @@ namespace {
             netplay::SessionSettings s = settings(true);
             s.resume = resume;
             resuming = resume;
+            set_option("via", "direct");
             if (!open_lobby(s)) {
                 show(Screen::Menu);
                 open_info_prompt("Online Play", sentences(netplay::lobby_status().reason), "OK", []() {},
@@ -468,6 +538,7 @@ namespace {
                 return;
             }
             set_option("address", s.peer);
+            set_option("via", "direct");
             if (!online.can_start()) {
                 return;
             }
@@ -479,6 +550,73 @@ namespace {
             join_state->set_text("Connecting to " + s.peer + "...");
             connect_button->set_enabled(false);
             connecting = true;
+        }
+
+        // Play on a Server's Connect! (or Resume Party: resume, if this copy turns out to host): joins the server, and
+        // refresh opens the lobby once it has.
+        void join_server(bool resume) {
+            std::string address = trimmed(server_input->get_text());
+            if (address.empty()) {
+                server_error->set_text("Type the server's address first, like play.example.com or 203.0.113.5.");
+                return;
+            }
+            set_option("server", address);
+            set_option("server_password", password_input->get_text());
+            set_option("via", "server");
+            // This copy's token on servers, kept with the settings, so that a host whose game closed or crashed comes
+            // back to its held place as the host (udp.h's relay_connect reads it from the environment).
+            if (option("server_token").empty()) {
+                std::random_device rd;
+                char hex[24];
+                snprintf(hex, sizeof(hex), "%08x%08x", unsigned(rd()), unsigned(rd()) | 1u);
+                set_option("server_token", hex);
+            }
+#ifdef _WIN32
+            _putenv_s("MP_NETPLAY_RELAY_TOKEN", option("server_token").c_str());
+#else
+            setenv("MP_NETPLAY_RELAY_TOKEN", option("server_token").c_str(), 1);
+#endif
+            if (!online.can_start()) {
+                return;
+            }
+            server_resume = resume;
+            server_error->set_text("");
+            server_state->set_text("Connecting to " + address + "...");
+            server_connect_button->set_enabled(false);
+            server_resume_button->set_enabled(false);
+            netplay::server_join(address, trimmed(name_input->get_text()), password_input->get_text());
+            server_joining = true;
+        }
+
+        void server_failed(const std::string& why) {
+            server_state->set_text("");
+            server_error->set_text(why);
+            server_connect_button->set_enabled(true);
+            server_resume_button->set_enabled(true);
+        }
+
+        // Once the server has taken this copy: its lobby, the host's or a guest's.
+        void server_joined(bool as_host) {
+            netplay::SessionSettings s;
+            s.host = as_host;
+            s.via_server = true;
+            s.peer = trimmed(server_input->get_text());
+            s.name = trimmed(name_input->get_text());
+            s.resume = as_host && server_resume;
+            resuming = s.resume;
+            if (!open_lobby(s)) {
+                netplay::server_cancel();
+                server_failed(sentences(netplay::lobby_status().reason));
+                return;
+            }
+            if (as_host) {
+                server_state->set_text("");
+                in_party = true;
+                show(Screen::Party);
+            } else {
+                server_state->set_text("On the server: waiting for the host...");
+                connecting = true;
+            }
         }
 
         void leave() {
@@ -498,6 +636,18 @@ namespace {
                 toast->set_text("");
                 toast_shown = false;
             }
+            if (server_joining) {
+                netplay::ServerJoin j = netplay::server_join_status();
+                if (j.phase == netplay::ServerJoin::Failed) {
+                    server_joining = false;
+                    netplay::server_cancel();
+                    server_failed(sentences(j.reason));
+                } else if (j.phase == netplay::ServerJoin::Joined) {
+                    server_joining = false;
+                    server_joined(j.host);
+                }
+                return;
+            }
             if (!connecting && !in_party) {
                 return;
             }
@@ -506,9 +656,13 @@ namespace {
                 if (s.phase == netplay::LobbyStatus::Failed || s.phase == netplay::LobbyStatus::Closed) {
                     connecting = false;
                     netplay::lobby_close();
-                    join_state->set_text("");
-                    join_error->set_text(sentences(s.reason));
-                    connect_button->set_enabled(true);
+                    if (via_server) {
+                        server_failed(sentences(s.reason));
+                    } else {
+                        join_state->set_text("");
+                        join_error->set_text(sentences(s.reason));
+                        connect_button->set_enabled(true);
+                    }
                 } else if (s.player > 0) {
                     connecting = false;
                     in_party = true;
@@ -523,7 +677,7 @@ namespace {
             bool failed = s.phase == netplay::LobbyStatus::Failed || s.phase == netplay::LobbyStatus::Closed;
             if (s.host) {
                 party_title->set_text("Your Party");
-                share_caption->set_text("Share this address");
+                share_caption->set_text(via_server ? "Hosting on the server: friends join it" : "Share this address");
                 std::string addresses;
                 for (const std::string& a : s.share) {
                     addresses += (addresses.empty() ? "" : "\n") + a;
@@ -540,7 +694,7 @@ namespace {
             } else {
                 const std::string& host_name = s.seats[0].name;
                 party_title->set_text(host_name.empty() ? "The Host's Party" : host_name + "'s Party");
-                share_caption->set_text("Connected to");
+                share_caption->set_text(via_server ? "On the server" : "Connected to");
                 share_address->set_text(s.peer);
                 if (s.resuming) {
                     note->set_text_unsafe("<b>The host is resuming your last party.</b> Ready up and it picks up "
